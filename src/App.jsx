@@ -368,13 +368,14 @@ function App() {
           </div>
           
           {/* Mode Selector Row */}
-          <div className="grid grid-cols-5 gap-1 mb-4 text-[10px]">
+          <div className="grid grid-cols-3 gap-2 mb-4 text-[10px]">
             {[
               { id: 'default', label: 'Default', icon: '🌌' },
               { id: 'solid', label: 'Solid', icon: '🎨' },
               { id: 'splashes', label: 'Splashes', icon: '✨' },
               { id: 'gradual', label: 'Flow', icon: '🌈' },
               { id: 'wallpaper', label: 'Wall', icon: '🏠' },
+              { id: 'sitting_room', label: '3D Room', icon: '🖥️' },
             ].map((mode) => (
               <button
                 key={mode.id}
@@ -493,11 +494,12 @@ function App() {
           )}
 
           {/* Flowing Splashes / Gradual Details */}
-          {(bgMode === 'default' || bgMode === 'splashes' || bgMode === 'gradual') && (
+          {(bgMode === 'default' || bgMode === 'splashes' || bgMode === 'gradual' || bgMode === 'sitting_room') && (
             <div className="text-[10px] text-slate-500 bg-slate-900/30 p-2 rounded border border-slate-900/50 text-center animate-slide-up">
               {bgMode === 'default' && 'Premium deep slate space background with floor shadows.'}
               {bgMode === 'splashes' && 'Gorgeous animated background with slow glowing color splashes.'}
               {bgMode === 'gradual' && 'Calm color gradients gradually flowing over time.'}
+              {bgMode === 'sitting_room' && 'Full 3D technological classroom with wood desk, mesh chair, and glowing computer setup.'}
             </div>
           )}
         </div>
@@ -507,6 +509,7 @@ function App() {
       <Suspense fallback={<div className="absolute inset-0 z-0 flex items-center justify-center text-purple-400 bg-slate-900">Loading AI Companion...</div>}>
         <AvatarCanvas
           action={avatarAction}
+          bgMode={bgMode}
           onAvatarLoaded={onAvatarLoaded}
           wordEventRef={wordEventRef}
           onDance={() => {

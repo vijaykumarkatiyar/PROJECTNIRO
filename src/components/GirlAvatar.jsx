@@ -6,7 +6,7 @@ import * as THREE from 'three'
 
 const MODEL_URL = import.meta.env.BASE_URL + 'andra.glb'
 
-export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEventRef, headPositionRef, ...props }) {
+export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEventRef, headPositionRef, bgMode = 'default', ...props }) {
   const yawGroupRef = useRef(null)
   const { scene } = useGLTF(MODEL_URL)
   const [autoScale, setAutoScale] = useState(0.9)
@@ -126,15 +126,9 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       return 0
     }
 
-    let h,
-      la,
-      ra,
-      s,
-      j,
-      neck,
-      le,
-      re,
-      bestJaw = 0
+    let h, la, ra, s, j, neck, le, re, bestJaw = 0
+    let hips, leftUpLeg, rightUpLeg, leftLeg, rightLeg, leftForeArm, rightForeArm, leftHand, rightHand
+
     for (const child of allBones) {
       const name = child.name.toLowerCase()
       if (!h && name.includes('head') && !name.includes('top') && !name.includes('end')) h = child
@@ -144,6 +138,18 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       if (!neck && name.includes('neck')) neck = child
       if (!le && (name.includes('lefteye') || name.includes('left_eye'))) le = child
       if (!re && (name.includes('righteye') || name.includes('right_eye'))) re = child
+
+      // Custom bone lookups for Sitting/Desk posture
+      if (!hips && (name.includes('hips') || name.includes('pelvis') || name === 'root')) hips = child
+      if (!leftUpLeg && (name.includes('leftupleg') || name.includes('left_thigh') || name.includes('leftthigh') || name.includes('left_up_leg'))) leftUpLeg = child
+      if (!rightUpLeg && (name.includes('rightupleg') || name.includes('right_thigh') || name.includes('rightthigh') || name.includes('right_up_leg'))) rightUpLeg = child
+      if (!leftLeg && (name.includes('leftleg') || name.includes('left_shin') || name.includes('leftshin') || name.includes('left_leg')) && !name.includes('upleg')) leftLeg = child
+      if (!rightLeg && (name.includes('rightleg') || name.includes('right_shin') || name.includes('rightshin') || name.includes('right_leg')) && !name.includes('upleg')) rightLeg = child
+      if (!leftForeArm && (name.includes('leftforearm') || name.includes('left_forearm') || name.includes('leftforearm'))) leftForeArm = child
+      if (!rightForeArm && (name.includes('rightforearm') || name.includes('right_forearm') || name.includes('rightforearm'))) rightForeArm = child
+      if (!leftHand && (name.includes('lefthand') || name.includes('left_hand'))) leftHand = child
+      if (!rightHand && (name.includes('righthand') || name.includes('right_hand'))) rightHand = child
+
       const js = jawScore(child.name)
       if (js > bestJaw) {
         bestJaw = js
@@ -163,7 +169,10 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       })
     }
 
-    return { head: h, leftArm: la, rightArm: ra, spine: s, jaw: j, neck: neck, leftEye: le, rightEye: re }
+    return { 
+      head: h, leftArm: la, rightArm: ra, spine: s, jaw: j, neck: neck, leftEye: le, rightEye: re,
+      hips, leftUpLeg, rightUpLeg, leftLeg, rightLeg, leftForeArm, rightForeArm, leftHand, rightHand
+    }
   }, [scene])
 
   // Discover morph targets for lip sync
@@ -224,8 +233,23 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
     const bNeck = bones.neck
     const bLeftEye = bones.leftEye
     const bRightEye = bones.rightEye
+
+    // Extra bones for sitting/desk setup
+    const bHips = bones.hips
+    const bLeftUpLeg = bones.leftUpLeg
+    const bRightUpLeg = bones.rightUpLeg
+    const bLeftLeg = bones.leftLeg
+    const bRightLeg = bones.rightLeg
+    const bLeftForeArm = bones.leftForeArm
+    const bRightForeArm = bones.rightForeArm
+    const bLeftHand = bones.leftHand
+    const bRightHand = bones.rightHand
     
-    ;[bHead, bLeftArm, bRightArm, bSpine, bNeck].forEach(b => {
+    ;[
+      bHead, bLeftArm, bRightArm, bSpine, bNeck,
+      bHips, bLeftUpLeg, bRightUpLeg, bLeftLeg, bRightLeg,
+      bLeftForeArm, bRightForeArm, bLeftHand, bRightHand
+    ].forEach(b => {
         if (b && !b.userData.initRot) {
            b.userData.initRot = b.rotation.clone()
            if (isNaN(b.userData.initRot.x)) b.userData.initRot.x = 0;
@@ -233,6 +257,10 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
            if (isNaN(b.userData.initRot.z)) b.userData.initRot.z = 0;
         }
     })
+
+    if (bHips && !bHips.userData.initPos) {
+      bHips.userData.initPos = bHips.position.clone()
+    }
 
     // Track the real head world position for perfect "eye to eye" camera locking
     if (bHead && headPositionRef && headPositionRef.current) {
@@ -444,6 +472,90 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       if (bHead) bHead.rotation.z = bHead.userData.initRot.z + Math.sin(t * 4) * 0.2
       if (bLeftArm) { bLeftArm.rotation.x = bLeftArm.userData.initRot.x + Math.sin(t * 6); bLeftArm.rotation.z = bLeftArm.userData.initRot.z + 1.0 }
       if (bRightArm) { bRightArm.rotation.x = bRightArm.userData.initRot.x - Math.sin(t * 6); bRightArm.rotation.z = bRightArm.userData.initRot.z - 1.0 }
+    }
+
+    // ── Sitting Posture Post-Processing Override ──
+    const isSittingMode = bgMode === 'sitting_room'
+    
+    if (isSittingMode && action !== 'dance') {
+      // 1. Position hips sitting down and slightly back
+      if (bHips) {
+        bHips.position.y = -0.42
+        bHips.position.z = -0.15
+      }
+
+      // 2. Thighs 90 degrees forward
+      if (bLeftUpLeg) {
+        bLeftUpLeg.rotation.x = safeLerp(bLeftUpLeg.rotation.x, -Math.PI / 2 + 0.1, 0.1)
+        bLeftUpLeg.rotation.y = safeLerp(bLeftUpLeg.rotation.y, 0.05, 0.1)
+        bLeftUpLeg.rotation.z = safeLerp(bLeftUpLeg.rotation.z, 0, 0.1)
+      }
+      if (bRightUpLeg) {
+        bRightUpLeg.rotation.x = safeLerp(bRightUpLeg.rotation.x, -Math.PI / 2 + 0.1, 0.1)
+        bRightUpLeg.rotation.y = safeLerp(bRightUpLeg.rotation.y, -0.05, 0.1)
+        bRightUpLeg.rotation.z = safeLerp(bRightUpLeg.rotation.z, 0, 0.1)
+      }
+
+      // 3. Knees 90 degrees down
+      if (bLeftLeg) {
+        bLeftLeg.rotation.x = safeLerp(bLeftLeg.rotation.x, Math.PI / 2 - 0.05, 0.1)
+      }
+      if (bRightLeg) {
+        bRightLeg.rotation.x = safeLerp(bRightLeg.rotation.x, Math.PI / 2 - 0.05, 0.1)
+      }
+
+      // 4. Arms forward on the table
+      if (bLeftArm) {
+        bLeftArm.rotation.x = safeLerp(bLeftArm.rotation.x, -1.0, 0.1)
+        bLeftArm.rotation.y = safeLerp(bLeftArm.rotation.y, 0.25, 0.1)
+        bLeftArm.rotation.z = safeLerp(bLeftArm.rotation.z, 0.0, 0.1)
+      }
+      if (bLeftForeArm) {
+        // Subtle active typing simulation
+        const typeWobbleX = Math.sin(t * 16) * 0.025
+        const typeWobbleY = Math.cos(t * 24) * 0.015
+        bLeftForeArm.rotation.x = safeLerp(bLeftForeArm.rotation.x, -0.3 + typeWobbleX, 0.1)
+        bLeftForeArm.rotation.y = safeLerp(bLeftForeArm.rotation.y, -0.55 + typeWobbleY, 0.1)
+        bLeftForeArm.rotation.z = safeLerp(bLeftForeArm.rotation.z, -0.1, 0.1)
+      }
+      if (bLeftHand) {
+        bLeftHand.rotation.x = safeLerp(bLeftHand.rotation.x, 0.1, 0.1)
+      }
+
+      const mouseSlide = Math.sin(t * 1.5) * Math.cos(t * 0.7) * 0.02
+      if (bRightArm) {
+        bRightArm.rotation.x = safeLerp(bRightArm.rotation.x, -1.0, 0.1)
+        bRightArm.rotation.y = safeLerp(bRightArm.rotation.y, -0.35, 0.1)
+        bRightArm.rotation.z = safeLerp(bRightArm.rotation.z, 0.0, 0.1)
+      }
+      if (bRightForeArm) {
+        bRightForeArm.rotation.x = safeLerp(bRightForeArm.rotation.x, -0.3, 0.1)
+        bRightForeArm.rotation.y = safeLerp(bRightForeArm.rotation.y, 0.65 + mouseSlide, 0.1)
+        bRightForeArm.rotation.z = safeLerp(bRightForeArm.rotation.z, 0.1, 0.1)
+      }
+      if (bRightHand) {
+        bRightHand.rotation.x = safeLerp(bRightHand.rotation.x, 0.1, 0.1)
+      }
+    } else if (!isSittingMode && action !== 'dance') {
+      // Smoothly blend hips & legs back to default standing pose
+      if (bHips && bHips.userData.initPos) {
+        bHips.position.copy(bHips.userData.initPos)
+      }
+      ;[bLeftUpLeg, bRightUpLeg, bLeftLeg, bRightLeg].forEach(b => {
+        if (b && b.userData.initRot) {
+          b.rotation.x = safeLerp(b.rotation.x, b.userData.initRot.x, 0.1)
+          b.rotation.y = safeLerp(b.rotation.y, b.userData.initRot.y, 0.1)
+          b.rotation.z = safeLerp(b.rotation.z, b.userData.initRot.z, 0.1)
+        }
+      })
+      // Forearms and hands back to default
+      ;[bLeftForeArm, bRightForeArm, bLeftHand, bRightHand].forEach(b => {
+        if (b && b.userData.initRot) {
+          b.rotation.x = safeLerp(b.rotation.x, b.userData.initRot.x, 0.1)
+          b.rotation.y = safeLerp(b.rotation.y, b.userData.initRot.y, 0.1)
+          b.rotation.z = safeLerp(b.rotation.z, b.userData.initRot.z, 0.1)
+        }
+      })
     }
   })
 
