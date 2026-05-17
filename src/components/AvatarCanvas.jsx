@@ -109,8 +109,7 @@ export function AvatarCanvas({ action, onDance, onAvatarLoaded, wordEventRef }) 
 
   return (
     <div className="absolute inset-0 z-0 cursor-grab active:cursor-grabbing select-none">
-      <Canvas shadows camera={{ position: [0, 0.65, 0.85], fov: 52 }}>
-        <color attach="background" args={['#0f172a']} />
+      <Canvas shadows camera={{ position: [0, 0.65, 0.85], fov: 52 }} gl={{ alpha: true }}>
         <ambientLight intensity={0.8} />
         <directionalLight 
           castShadow 

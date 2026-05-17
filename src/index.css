@@ -36,3 +36,38 @@ body {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* ── Premium Background Animations ── */
+@keyframes float-slow-1 {
+  0%, 100% { transform: translate(0px, 0px) scale(1); }
+  33% { transform: translate(40px, -60px) scale(1.2); }
+  66% { transform: translate(-30px, 30px) scale(0.9); }
+}
+@keyframes float-slow-2 {
+  0%, 100% { transform: translate(0px, 0px) scale(1.1); }
+  40% { transform: translate(-50px, 50px) scale(0.95); }
+  70% { transform: translate(60px, -40px) scale(1.25); }
+}
+@keyframes float-slow-3 {
+  0%, 100% { transform: translate(0px, 0px) scale(0.95); }
+  50% { transform: translate(40px, 40px) scale(1.1); }
+}
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animate-float-1 {
+  animation: float-slow-1 22s ease-in-out infinite;
+}
+.animate-float-2 {
+  animation: float-slow-2 26s ease-in-out infinite;
+}
+.animate-float-3 {
+  animation: float-slow-3 18s ease-in-out infinite;
+}
+.animate-gradient {
+  background-size: 300% 300%;
+  animation: gradient-shift 12s ease infinite;
+}

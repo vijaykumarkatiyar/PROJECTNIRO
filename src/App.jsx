@@ -42,6 +42,29 @@ function App() {
   const speakGenRef = useRef(0)
   const wordEventRef = useRef(0) // timestamp of last spoken word boundary
 
+  // ── Custom Background States & Presets ──
+  const [bgMode, setBgMode] = useState('default') // 'default' | 'solid' | 'splashes' | 'gradual' | 'wallpaper'
+  const [solidColor, setSolidColor] = useState('#0f172a')
+  const [wallpaperUrl, setWallpaperUrl] = useState('https://images.unsplash.com/photo-1507842217343-583bb7270b66?q=80&w=1200')
+  const [customWallpaper, setCustomWallpaper] = useState(null)
+  const [showBgSelector, setShowBgSelector] = useState(false)
+
+  const COLOR_PRESETS = [
+    '#0f172a', // Slate Default
+    '#1e1b4b', // Royal Indigo
+    '#042f2e', // Deep Teal
+    '#310b2f', // Mystic Plum
+    '#0b132b', // Cyber Navy
+    '#18181b', // Matte Charcoal
+  ]
+
+  const WALLPAPER_PRESETS = [
+    { name: 'Cozy Library', url: 'https://images.unsplash.com/photo-1507842217343-583bb7270b66?q=80&w=1200' },
+    { name: 'Modern Studio', url: 'https://images.unsplash.com/photo-1497366216548-37526070297c?q=80&w=1200' },
+    { name: 'Aesthetic Pastel', url: 'https://images.unsplash.com/photo-1493934558415-9d19f0b2b4d2?q=80&w=1200' },
+    { name: 'Cyber Sci-Fi', url: 'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?q=80&w=1200' }
+  ]
+
   // User must click once to unlock browser audio
   const handleStartClick = () => {
     setUserInteracted(true)
@@ -272,6 +295,39 @@ function App() {
 
   return (
     <div className="relative w-full h-[100dvh] overflow-hidden">
+      {/* ── Premium Background Layer Rendering ── */}
+      <div className="absolute inset-0 z-0 pointer-events-none select-none transition-colors duration-500">
+        {bgMode === 'default' && (
+          <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-950 to-indigo-950" />
+        )}
+        
+        {bgMode === 'solid' && (
+          <div className="absolute inset-0 transition-colors duration-500" style={{ backgroundColor: solidColor }} />
+        )}
+        
+        {bgMode === 'splashes' && (
+          <div className="absolute inset-0 bg-slate-950 overflow-hidden">
+            <div className="absolute top-[10%] left-[5%] w-[45rem] h-[45rem] rounded-full bg-purple-600/10 blur-[130px] animate-float-1" />
+            <div className="absolute bottom-[10%] right-[5%] w-[55rem] h-[55rem] rounded-full bg-pink-600/10 blur-[150px] animate-float-2" />
+            <div className="absolute top-[40%] right-[25%] w-[35rem] h-[35rem] rounded-full bg-cyan-600/10 blur-[120px] animate-float-3" />
+          </div>
+        )}
+        
+        {bgMode === 'gradual' && (
+          <div className="absolute inset-0 bg-gradient-to-r from-slate-900 via-purple-950 to-slate-900 animate-gradient" style={{ backgroundSize: '300% 300%' }} />
+        )}
+        
+        {bgMode === 'wallpaper' && (
+          <div 
+            className="absolute inset-0 bg-cover bg-center transition-all duration-500" 
+            style={{ backgroundImage: `url(${customWallpaper || wallpaperUrl})` }}
+          >
+            {/* Elegant overlay to maintain contrast with the 3D character */}
+            <div className="absolute inset-0 bg-slate-950/65 backdrop-blur-[1px]" />
+          </div>
+        )}
+      </div>
+
       {/* Click-to-start overlay — required to unlock browser audio */}
       {!userInteracted && (
         <div
@@ -283,6 +339,167 @@ function App() {
             <p className="text-lg text-white font-medium">Click anywhere to start</p>
             <p className="text-sm text-slate-400 mt-1">Your AI teacher is ready to meet you</p>
           </div>
+        </div>
+      )}
+
+      {/* Floating Background Selector Trigger Button */}
+      {userInteracted && (
+        <div className="absolute top-3 left-3 z-20">
+          <button
+            onClick={() => setShowBgSelector(!showBgSelector)}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold text-white/90 bg-slate-900/80 border border-slate-700/40 hover:bg-slate-800/90 active:scale-95 transition-all shadow-lg backdrop-blur-md pointer-events-auto"
+          >
+            <span>🖼️</span> Background
+          </button>
+        </div>
+      )}
+
+      {/* Floating Background Selection Panel */}
+      {showBgSelector && userInteracted && (
+        <div className="absolute top-14 left-3 z-30 w-80 rounded-xl border border-slate-700/50 bg-slate-950/90 backdrop-blur-md p-4 text-white shadow-2xl animate-fade-in pointer-events-auto">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-purple-400">Customize Background</h3>
+            <button 
+              onClick={() => setShowBgSelector(false)}
+              className="text-slate-400 hover:text-white text-xs transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+          
+          {/* Mode Selector Row */}
+          <div className="grid grid-cols-5 gap-1 mb-4 text-[10px]">
+            {[
+              { id: 'default', label: 'Default', icon: '🌌' },
+              { id: 'solid', label: 'Solid', icon: '🎨' },
+              { id: 'splashes', label: 'Splashes', icon: '✨' },
+              { id: 'gradual', label: 'Flow', icon: '🌈' },
+              { id: 'wallpaper', label: 'Wall', icon: '🏠' },
+            ].map((mode) => (
+              <button
+                key={mode.id}
+                onClick={() => setBgMode(mode.id)}
+                className={`flex flex-col items-center gap-1 p-1.5 rounded-lg border transition-all ${
+                  bgMode === mode.id 
+                    ? 'bg-purple-600/30 border-purple-500/80 text-white font-medium shadow-md shadow-purple-500/10' 
+                    : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+              >
+                <span className="text-base">{mode.icon}</span>
+                <span>{mode.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Solid Color Controller Sub-Panel */}
+          {bgMode === 'solid' && (
+            <div className="space-y-2.5 animate-slide-up">
+              <label className="text-[11px] text-slate-400 font-medium block">Choose solid color:</label>
+              
+              {/* Presets Grid */}
+              <div className="grid grid-cols-6 gap-2">
+                {COLOR_PRESETS.map((color) => (
+                  <button
+                    key={color}
+                    onClick={() => setSolidColor(color)}
+                    style={{ backgroundColor: color }}
+                    className={`w-7 h-7 rounded-full border transition-all hover:scale-110 active:scale-95 ${
+                      solidColor === color ? 'border-white scale-105 shadow-md' : 'border-slate-700/60'
+                    }`}
+                    title={color}
+                  />
+                ))}
+                {/* Custom Color Input */}
+                <div className="relative w-7 h-7 rounded-full overflow-hidden border border-slate-700 hover:scale-110 transition-all flex items-center justify-center bg-slate-900">
+                  <span className="text-xs pointer-events-none z-10">➕</span>
+                  <input
+                    type="color"
+                    value={solidColor}
+                    onChange={(e) => setSolidColor(e.target.value)}
+                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full scale-150"
+                    title="Custom Color"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Wallpaper Controller Sub-Panel */}
+          {bgMode === 'wallpaper' && (
+            <div className="space-y-3 animate-slide-up">
+              <label className="text-[11px] text-slate-400 font-medium block">Choose preset wall style:</label>
+              
+              {/* Presets Grid */}
+              <div className="grid grid-cols-2 gap-2 text-[10px]">
+                {WALLPAPER_PRESETS.map((preset) => (
+                  <button
+                    key={preset.name}
+                    onClick={() => {
+                      setWallpaperUrl(preset.url)
+                      setCustomWallpaper(null)
+                    }}
+                    className={`relative h-14 rounded-lg overflow-hidden border transition-all flex items-end p-1 hover:scale-[1.02] ${
+                      !customWallpaper && wallpaperUrl === preset.url 
+                        ? 'border-purple-500 ring-1 ring-purple-500/50 scale-[1.01]' 
+                        : 'border-slate-800'
+                    }`}
+                  >
+                    <img src={preset.url} alt={preset.name} className="absolute inset-0 w-full h-full object-cover opacity-60" />
+                    <span className="relative z-10 font-medium text-white bg-slate-950/80 px-1 py-0.5 rounded text-[8px] truncate max-w-full">
+                      {preset.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Upload Custom Input */}
+              <div className="border-t border-slate-900 pt-2.5">
+                <label className="text-[11px] text-slate-400 font-medium block mb-1.5">Or upload custom wallpaper:</label>
+                <div className="relative flex items-center justify-center border border-dashed border-slate-700 hover:border-purple-500/50 rounded-lg p-2 bg-slate-900/40 cursor-pointer transition-all">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) {
+                        const reader = new FileReader()
+                        reader.onload = (event) => {
+                          if (event.target?.result) {
+                            setCustomWallpaper(event.target.result)
+                          }
+                        }
+                        reader.readAsDataURL(file)
+                      }
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <div className="text-center text-[10px] text-slate-400">
+                    <span>📤 Upload Image File</span>
+                  </div>
+                </div>
+                {customWallpaper && (
+                  <div className="flex items-center justify-between text-[9px] text-slate-400 bg-slate-900/60 p-1 rounded mt-2">
+                    <span className="truncate max-w-[150px]">Custom wallpaper loaded</span>
+                    <button 
+                      onClick={() => setCustomWallpaper(null)} 
+                      className="text-red-400 hover:text-red-300 font-bold px-1"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Flowing Splashes / Gradual Details */}
+          {(bgMode === 'default' || bgMode === 'splashes' || bgMode === 'gradual') && (
+            <div className="text-[10px] text-slate-500 bg-slate-900/30 p-2 rounded border border-slate-900/50 text-center animate-slide-up">
+              {bgMode === 'default' && 'Premium deep slate space background with floor shadows.'}
+              {bgMode === 'splashes' && 'Gorgeous animated background with slow glowing color splashes.'}
+              {bgMode === 'gradual' && 'Calm color gradients gradually flowing over time.'}
+            </div>
+          )}
         </div>
       )}
 
