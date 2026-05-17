@@ -66,25 +66,40 @@ function DragYaw({ yawRef }) {
   return null
 }
 
-function CameraController({ action, controlsRef, headPositionRef }) {
+function CameraController({ action, bgMode, controlsRef, headPositionRef }) {
   const { camera } = useThree()
   const targetPos = useRef(DEFAULT_POS.clone())
   const targetLookAt = useRef(DEFAULT_TARGET.clone())
 
   useFrame((_, delta) => {
     const isDance = action === 'dance'
+    const isSitting = bgMode === 'sitting_room'
     
-    // Smoothly track the actual head bone world coordinates, or fallback to default
-    const goalTarget = isDance ? DANCE_TARGET : (headPositionRef.current || DEFAULT_TARGET)
+    // Smoothly track look-at target
+    let goalTarget = DEFAULT_TARGET
+    if (isDance) {
+      goalTarget = DANCE_TARGET
+    } else if (isSitting) {
+      // Look slightly below head at desk level (y = 0.08) to center the room setup
+      goalTarget = new THREE.Vector3(0, 0.08, 0.05)
+    } else {
+      goalTarget = headPositionRef.current || DEFAULT_TARGET
+    }
     
-    // Zoom out for dance, or stay perfectly portrait-locked on the face/shoulders
-    const goalPos = isDance 
-      ? DANCE_POS 
-      : new THREE.Vector3(
-          goalTarget.x,
-          goalTarget.y,
-          goalTarget.z + 0.65 // Perfect portrait framing distance
-        )
+    // Zoom out for dance/room, or stay perfectly portrait-locked on the face/shoulders
+    let goalPos = DEFAULT_POS
+    if (isDance) {
+      goalPos = DANCE_POS
+    } else if (isSitting) {
+      // Beautiful zoomed-out camera angle showing the entire desk, keyboard, mouse, and chair base
+      goalPos = new THREE.Vector3(0, 0.48, 1.65)
+    } else {
+      goalPos = new THREE.Vector3(
+        goalTarget.x,
+        goalTarget.y,
+        goalTarget.z + 0.65 // Perfect portrait framing distance
+      )
+    }
 
     // Smoothly interpolate toward goal
     targetPos.current.lerp(goalPos, LERP_SPEED * delta)
@@ -343,7 +358,7 @@ export function AvatarCanvas({ action, bgMode = 'default', onDance, onAvatarLoad
         <ContactShadows position={[0, -0.58, 0]} opacity={0.65} scale={4} blur={2.5} far={2} />
 
         <DragYaw yawRef={yawRef} />
-        <CameraController action={action} controlsRef={controlsRef} headPositionRef={headPositionRef} />
+        <CameraController action={action} bgMode={bgMode} controlsRef={controlsRef} headPositionRef={headPositionRef} />
 
         <OrbitControls 
           ref={controlsRef}
