@@ -1,33 +1,23 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
-
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ''
-const genAI = new GoogleGenerativeAI(apiKey)
-
-export async function chatWithCompanion(message, history = []) {
-  if (!apiKey) {
-    return "Please provide a VITE_GEMINI_API_KEY in your .env file so I can think!"
-  }
-
+export async function chatWithCompanion(message, history = [], language = 'hi') {
   try {
-    // Using the recommended gemini-1.5-flash for chat interactions
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash",
-      systemInstruction: "You are a friendly, knowledgeable, and supportive AI teacher. Keep responses conversational, concise (1-3 sentences), and educational. You love helping students learn and explaining concepts in simple terms. You can also dance when asked."
-    })
-    
-    const chatHistory = history.map(msg => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.text }]
-    }))
-
-    const chat = model.startChat({
-      history: chatHistory
+    const response = await fetch(`${import.meta.env.BASE_URL}api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message, history, language }),
     })
 
-    const result = await chat.sendMessage(message)
-    return result.response.text()
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(data.error || 'Chat request failed')
+    }
+
+    return data.text || (language === 'en' ? 'Sorry, I did not get a response yet.' : 'माफ़ कीजिए, मुझे अभी जवाब नहीं मिला।')
   } catch (error) {
-    console.error("Gemini Error:", error)
-    return "Oops, my brain disconnected. Please check the logs."
+    console.error('OpenAI chat error:', error)
+    return language === 'en'
+      ? 'Sorry, I am having trouble getting a response right now. Please try again in a moment.'
+      : 'माफ़ कीजिए, अभी जवाब लाने में दिक्कत आ रही है। कृपया थोड़ी देर बाद फिर पूछें।'
   }
 }

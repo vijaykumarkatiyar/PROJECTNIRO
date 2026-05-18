@@ -1,16 +1,73 @@
-# React + Vite
+# PROJECTNIRO AI Companion
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+An interactive React + Vite AI companion experience with a 3D avatar, Hindi/English conversation modes, voice input, mimic speech, a 3D desk room, and a butterfly cursor companion.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- 3D AI teacher avatar with idle, talking, seated room, and dance modes.
+- Hindi and English response mode switch.
+- Voice input and mimic mode for repeating spoken text.
+- OpenAI-powered local API routes through the Vite dev server.
+- Mode Selection panel for background, room, dance, and cursor controls.
+- 3D room with desk, chair, monitor, keyboard, mouse, solid floor, and adjusted avatar sitting pose.
+- Animated GLB butterfly cursor with optional normal cursor mode.
 
-## React Compiler
+## Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Install dependencies:
 
-## Expanding the ESLint configuration
+```bash
+npm install
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Create a local environment file:
+
+```bash
+.env.local
+```
+
+Add your API key:
+
+```bash
+OPENAI_API_KEY=your_key_here
+```
+
+Do not commit `.env.local`; it is intentionally ignored.
+
+## Development
+
+Start the local dev server:
+
+```bash
+npm run dev
+```
+
+Open the companion route:
+
+```text
+http://localhost:5173/companion/
+```
+
+## Build
+
+Create a production build only when ready:
+
+```bash
+npm run build
+```
+
+## Project Structure
+
+- `src/App.jsx` - main companion UI, modes, voice controls, and cursor state.
+- `src/components/AvatarCanvas.jsx` - 3D scene, camera, room, desk, and controls.
+- `src/components/GirlAvatar.jsx` - avatar rig, seated pose, blink, talk, and dance behavior.
+- `src/components/ButterflyCursor.jsx` - GLB butterfly cursor rendering and animation.
+- `src/services/geminiService.js` - chat service client used by the UI.
+- `src/services/lipsyncEn.js` and `src/services/lipsyncHi.js` - lip sync helpers.
+- `public/butterfly.glb` - butterfly model asset.
+
+## Notes
+
+- Keep API keys in `.env.local`.
+- The 3D room is tuned for the current avatar rig and camera.
+- Build was intentionally not run during the latest UI changes unless requested.

@@ -1,31 +1,61 @@
 import { useState, useRef, useEffect, useCallback, Suspense } from 'react'
 import { AvatarCanvas } from './components/AvatarCanvas'
+import { ButterflyCursor } from './components/ButterflyCursor'
 import { chatWithCompanion } from './services/geminiService'
+import { textToVisemeTimeline } from './services/lipsyncEn'
+import { textToVisemeTimelineHindi } from './services/lipsyncHi'
 import './App.css'
 
-const GREETING_TEXT =
-  "Welcome! I am your AI teacher. Feel free to ask me anything!"
+const HINDI_LANG = 'hi-IN'
+const ENGLISH_LANG = 'en-US'
 
-const DEMO_LIP_LINE =
-  'Hello! This is a demo line — one, two, three — so you can check lip sync and the talk camera.'
+const LANGUAGE_COPY = {
+  hi: {
+    code: 'हिं',
+    label: 'Hindi',
+    locale: HINDI_LANG,
+    greeting: 'नमस्ते! मैं आपकी AI शिक्षिका हूं। आप मुझसे कुछ भी पूछ सकते हैं।',
+    placeholder: 'कुछ बोलिए...',
+    micRetry: 'मुझे आवाज़ साफ़ नहीं सुनाई दी। कृपया फिर से बोलिए।',
+    micError: 'माइक से आवाज़ पढ़ने में दिक्कत आ रही है। कृपया फिर कोशिश करें।',
+    micUnavailable: 'इस ब्राउज़र में माइक उपलब्ध नहीं है। Mimic mode में लिखकर Send दबाएं, मैं वही बोलकर दोहराऊंगी।',
+  },
+  en: {
+    code: 'EN',
+    label: 'English',
+    locale: ENGLISH_LANG,
+    greeting: 'Hello! I am your AI teacher. You can ask me anything.',
+    placeholder: 'Say something...',
+    micRetry: 'I could not hear that clearly. Please try speaking again.',
+    micError: 'I had trouble reading the microphone audio. Please try again.',
+    micUnavailable: 'This browser cannot access the microphone. In Mimic mode, type and press Send, and I will repeat it.',
+  },
+}
 
-const DEMO_FAKE_REPLY =
-  'Demo reply: no Gemini call. If you see this subtitle and hear speech, TTS and chat UI are wired up.'
-
-const showDemoPanel =
-  import.meta.env.DEV ||
-  import.meta.env.VITE_SHOW_DEMO === 'true' ||
-  (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo') === '1')
-
-function pickPreferredVoice() {
+function pickPreferredVoice(languageMode = 'hi') {
   if (!('speechSynthesis' in window)) return null
   const voices = window.speechSynthesis.getVoices()
+  const voiceNameIncludes = (voice, words) => {
+    const name = voice.name.toLowerCase()
+    return words.some((word) => name.includes(word))
+  }
+  const locale = LANGUAGE_COPY[languageMode]?.locale || HINDI_LANG
+
+  if (languageMode === 'en') {
+    return (
+      voices.find((v) => v.lang === locale && v.name.includes('Google')) ||
+      voices.find((v) => v.lang === locale) ||
+      voices.find((v) => v.lang.toLowerCase().startsWith('en')) ||
+      voices.find((v) => voiceNameIncludes(v, ['english', 'zira', 'jenny', 'aria', 'samantha'])) ||
+      null
+    )
+  }
+
   return (
-    voices.find((v) => v.name.includes('Google') && v.lang.startsWith('en')) ||
-    voices.find((v) => v.name.includes('Google')) ||
-    voices.find((v) => v.name.includes('Female') || v.name.includes('Zira')) ||
-    voices.find((v) => v.lang.startsWith('en')) ||
-    voices[0] ||
+    voices.find((v) => v.lang === HINDI_LANG && v.name.includes('Google')) ||
+    voices.find((v) => v.lang === HINDI_LANG) ||
+    voices.find((v) => v.lang.toLowerCase().startsWith('hi')) ||
+    voices.find((v) => voiceNameIncludes(v, ['hindi', 'हिन्दी', 'हिंदी', 'kalpana', 'hemant', 'swara'])) ||
     null
   )
 }
@@ -35,12 +65,35 @@ function App() {
   const [messages, setMessages] = useState([])
   const [avatarAction, setAvatarAction] = useState('idle')
   const [isListening, setIsListening] = useState(false)
+  const [isMimicMode, setIsMimicMode] = useState(false)
+  const [languageMode, setLanguageMode] = useState('hi')
+  const [cursorMode, setCursorMode] = useState('butterfly')
   const [avatarLoaded, setAvatarLoaded] = useState(false)
   const [userInteracted, setUserInteracted] = useState(false)
   const chatEndRef = useRef(null)
   const hasPlayedGreeting = useRef(false)
   const speakGenRef = useRef(0)
-  const wordEventRef = useRef(0) // timestamp of last spoken word boundary
+  const speechAudioRef = useRef(null)
+  const speechAudioUrlRef = useRef(null)
+  const activeUtteranceRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const speechRecognitionRef = useRef(null)
+  const recordedChunksRef = useRef([])
+  const recordingStopTimerRef = useRef(null)
+  const recordingModeRef = useRef('chat')
+  const recordingStartedAtRef = useRef(0)
+  const voiceStartedAtRef = useRef(0)
+  const lastVoiceAtRef = useRef(0)
+  const silenceMonitorRef = useRef(null)
+  const audioContextRef = useRef(null)
+  const wordEventRef = useRef(0) // kept for fallback timing
+  const visemeTimelineRef = useRef(null)
+  const visemeCurrentRef = useRef({ viseme: 'sil', nextViseme: 'sil', phase: 0 })
+  const visemeRafRef = useRef(null)
+  const butterflyCursorRef = useRef(null)
+  const butterflyIdleTimerRef = useRef(null)
+  const butterflyPerchIndexRef = useRef(-1)
+  const butterflyLastPointRef = useRef(null)
 
   // ── Custom Background States & Presets ──
   const [bgMode, setBgMode] = useState('default') // 'default' | 'solid' | 'splashes' | 'gradual' | 'wallpaper'
@@ -65,12 +118,15 @@ function App() {
     { name: 'Cyber Sci-Fi', url: 'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?q=80&w=1200' }
   ]
 
+  const activeLanguage = LANGUAGE_COPY[languageMode] || LANGUAGE_COPY.hi
+
   // User must click once to unlock browser audio
   const handleStartClick = () => {
     setUserInteracted(true)
     // Unlock speechSynthesis with a silent utterance
     if ('speechSynthesis' in window) {
       const unlock = new SpeechSynthesisUtterance('')
+      unlock.lang = activeLanguage.locale
       unlock.volume = 0
       window.speechSynthesis.speak(unlock)
     }
@@ -80,14 +136,120 @@ function App() {
     setAvatarLoaded(true)
   }, [])
 
+  const perchButterflyCursor = useCallback(() => {
+    if (cursorMode !== 'butterfly') return
+    const cursor = butterflyCursorRef.current
+    if (!cursor) return
+
+    const width = window.innerWidth
+    const height = window.innerHeight
+    const centerX = width / 2
+    const perches = [
+      { x: centerX - width * 0.06, y: height * 0.22, rotate: '-16deg' },
+      { x: centerX + width * 0.07, y: height * 0.25, rotate: '12deg' },
+      { x: centerX - width * 0.16, y: height * 0.38, rotate: '-26deg' },
+      { x: centerX + width * 0.15, y: height * 0.39, rotate: '22deg' },
+      { x: centerX - width * 0.23, y: height * 0.66, rotate: '-10deg' },
+      { x: centerX + width * 0.23, y: height * 0.66, rotate: '10deg' },
+    ]
+    let nextIndex = Math.floor(Math.random() * perches.length)
+    if (nextIndex === butterflyPerchIndexRef.current) nextIndex = (nextIndex + 1) % perches.length
+    butterflyPerchIndexRef.current = nextIndex
+
+    const perch = perches[nextIndex]
+    cursor.classList.add('is-resting')
+    cursor.style.setProperty('--cursor-x', `${perch.x}px`)
+    cursor.style.setProperty('--cursor-y', `${perch.y}px`)
+    cursor.style.setProperty('--cursor-visible', '1')
+    cursor.style.setProperty('--butterfly-rest-rotate', perch.rotate)
+    cursor.style.setProperty('--butterfly-flight-rotate', perch.rotate)
+  }, [cursorMode])
+
+  const moveButterflyCursor = useCallback((event) => {
+    if (cursorMode !== 'butterfly') return
+    const cursor = butterflyCursorRef.current
+    if (!cursor) return
+
+    if (butterflyIdleTimerRef.current) {
+      window.clearTimeout(butterflyIdleTimerRef.current)
+      butterflyIdleTimerRef.current = null
+    }
+
+    const previousPoint = butterflyLastPointRef.current
+    const dx = previousPoint ? event.clientX - previousPoint.x : 0
+    const dy = previousPoint ? event.clientY - previousPoint.y : 0
+    const travel = Math.hypot(dx, dy)
+    const bank = travel > 1 ? Math.max(-24, Math.min(24, dx * 0.09 + dy * 0.16)) : 0
+    butterflyLastPointRef.current = { x: event.clientX, y: event.clientY }
+
+    cursor.classList.remove('is-resting')
+    cursor.style.setProperty('--cursor-x', `${event.clientX}px`)
+    cursor.style.setProperty('--cursor-y', `${event.clientY}px`)
+    cursor.style.setProperty('--cursor-visible', '1')
+    cursor.style.setProperty('--butterfly-flight-rotate', `${-8 + bank}deg`)
+    cursor.style.setProperty('--butterfly-rest-rotate', `${-8 + bank}deg`)
+    butterflyIdleTimerRef.current = window.setTimeout(perchButterflyCursor, 1700)
+  }, [cursorMode, perchButterflyCursor])
+
+  const hideButterflyCursor = useCallback(() => {
+    if (butterflyIdleTimerRef.current) {
+      window.clearTimeout(butterflyIdleTimerRef.current)
+      butterflyIdleTimerRef.current = null
+    }
+    butterflyLastPointRef.current = null
+    butterflyCursorRef.current?.style.setProperty('--cursor-visible', '0')
+  }, [])
+
+  useEffect(() => {
+    if (cursorMode !== 'butterfly') {
+      hideButterflyCursor()
+      return undefined
+    }
+
+    const handlePointerMove = (event) => moveButterflyCursor(event)
+    const handleWindowBlur = () => hideButterflyCursor()
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true })
+    window.addEventListener('mousemove', handlePointerMove, { passive: true })
+    window.addEventListener('blur', handleWindowBlur)
+
+    return () => {
+      if (butterflyIdleTimerRef.current) {
+        window.clearTimeout(butterflyIdleTimerRef.current)
+        butterflyIdleTimerRef.current = null
+      }
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('mousemove', handlePointerMove)
+      window.removeEventListener('blur', handleWindowBlur)
+    }
+  }, [cursorMode, hideButterflyCursor, moveButterflyCursor])
+
   // Scroll to bottom of chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const speak = useCallback((text, isDancing) => {
+  const speak = useCallback((text, isDancing, speechOptions = {}) => {
     const gen = ++speakGenRef.current
-    const estimatedDuration = Math.max(3500, text.length * 85)
+    const speechStyle = speechOptions.style || 'teacher'
+    const speechLanguage = speechOptions.language || languageMode
+    const speechLocale = LANGUAGE_COPY[speechLanguage]?.locale || HINDI_LANG
+    const targetDurationMs = Number(speechOptions.targetDurationMs || 0)
+    const estimatedDuration = targetDurationMs > 0
+      ? Math.max(1600, Math.min(15000, targetDurationMs + 1200))
+      : Math.max(3500, text.length * 85)
+
+    if (speechAudioRef.current) {
+      speechAudioRef.current.pause()
+      speechAudioRef.current = null
+    }
+    if (speechAudioUrlRef.current) {
+      URL.revokeObjectURL(speechAudioUrlRef.current)
+      speechAudioUrlRef.current = null
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
 
     const startTalkIfCurrent = () => {
       if (!isDancing && speakGenRef.current === gen) setAvatarAction('talk')
@@ -96,104 +258,205 @@ function App() {
       if (!isDancing && speakGenRef.current === gen) setAvatarAction('idle')
     }
 
-    if (!('speechSynthesis' in window)) {
-      // No TTS available — start lip sync immediately with timer fallback
-      startTalkIfCurrent()
-      window.setTimeout(endTalkIfCurrent, estimatedDuration)
-      return
-    }
-
-    window.speechSynthesis.cancel()
-
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 1
-    utterance.pitch = 1.1
-
-    // Timer-based word pulse fallback (onboundary is unreliable in most browsers)
     let wordPulseInterval = null
+    let speechTimeout = null
+    let speechStartTime = 0
 
-    // Sync lip animation with actual audio start
-    utterance.onstart = () => {
-      startTalkIfCurrent()
-      wordEventRef.current = performance.now()
-      // Pulse wordEventRef every ~250ms to keep lips moving throughout speech
-      wordPulseInterval = window.setInterval(() => {
-        wordEventRef.current = performance.now()
-      }, 250)
-    }
-    // Also use real boundary events when available (overrides the timer pulse)
-    utterance.onboundary = (e) => {
-      if (e.name === 'word') {
-        wordEventRef.current = performance.now()
-      }
-    }
-    utterance.onend = () => {
-      if (wordPulseInterval) window.clearInterval(wordPulseInterval)
-      wordEventRef.current = 0 // signal mouth to close
-      endTalkIfCurrent()
-    }
-    utterance.onerror = () => {
-      if (wordPulseInterval) window.clearInterval(wordPulseInterval)
-      wordEventRef.current = 0
-      endTalkIfCurrent()
-    }
-
-    // Chrome needs speak() after cancel on a later task; Safari often needs resume()
-    const applyVoiceAndSpeak = () => {
-      try {
-        window.speechSynthesis.resume()
-      } catch {
-        /* ignore */
-      }
-      const voice = pickPreferredVoice()
-      if (voice) utterance.voice = voice
-      window.speechSynthesis.speak(utterance)
-    }
-
-    const runSpeak = () => {
-      window.setTimeout(applyVoiceAndSpeak, 0)
-    }
-
-    const voices = window.speechSynthesis.getVoices()
-    if (voices.length > 0) {
-      runSpeak()
+    // Generate the exact viseme timeline for the spoken text based on language
+    if (speechLanguage === 'hi') {
+      visemeTimelineRef.current = textToVisemeTimelineHindi(text, estimatedDuration)
     } else {
-      let started = false
-      const onVoices = () => startOnce()
-      const startOnce = () => {
-        if (started) return
-        started = true
-        window.speechSynthesis.removeEventListener('voiceschanged', onVoices)
-        runSpeak()
+      visemeTimelineRef.current = textToVisemeTimeline(text, estimatedDuration)
+    }
+    
+    const updateVisemeLoop = () => {
+      if (speakGenRef.current !== gen) return
+      
+      const now = performance.now()
+      let elapsedMs = now - speechStartTime
+
+      if (speechAudioRef.current) {
+        const audio = speechAudioRef.current
+        const audioMs = audio.currentTime * 1000
+        
+        // If our high-resolution performance.now() clock drifts by more than
+        // 80ms from the coarse audio.currentTime clock, recalibrate it
+        if (Math.abs(elapsedMs - audioMs) > 80) {
+          speechStartTime = now - audioMs
+          elapsedMs = audioMs
+        }
       }
-      window.speechSynthesis.addEventListener('voiceschanged', onVoices)
-      window.setTimeout(startOnce, 500)
+
+      const timeline = visemeTimelineRef.current
+      if (timeline && timeline.times.length > 0) {
+        // Find current viseme in timeline
+        let idx = 0
+        for (let i = 0; i < timeline.times.length; i++) {
+          if (elapsedMs >= timeline.times[i]) idx = i
+          else break
+        }
+        
+        const currentViseme = timeline.visemes[idx]
+        const currentStart = timeline.times[idx]
+        const currentDuration = timeline.durations[idx]
+        
+        // Find next viseme for smooth interpolation
+        const nextIdx = Math.min(idx + 1, timeline.visemes.length - 1)
+        const nextViseme = timeline.visemes[nextIdx]
+        
+        // Phase goes from 0.0 to 1.0 within the current viseme's duration
+        const phase = Math.min(1.0, Math.max(0.0, (elapsedMs - currentStart) / currentDuration))
+        
+        visemeCurrentRef.current = {
+          viseme: currentViseme,
+          nextViseme: nextViseme,
+          phase: phase
+        }
+      } else {
+        visemeCurrentRef.current = { viseme: 'sil', nextViseme: 'sil', phase: 0 }
+      }
+
+      visemeRafRef.current = requestAnimationFrame(updateVisemeLoop)
     }
 
-    // Safety fallback — if onstart never fires (some browsers), start after a short delay
-    window.setTimeout(() => {
-      if (speakGenRef.current === gen && !isDancing) {
-        setAvatarAction((prev) => {
-          if (prev === 'idle') {
-            wordEventRef.current = performance.now()
-            if (!wordPulseInterval) {
-              wordPulseInterval = window.setInterval(() => {
-                wordEventRef.current = performance.now()
-              }, 250)
-            }
-            return 'talk'
-          }
-          return prev
-        })
-      }
-    }, 300)
+    const startPulse = () => {
+      if (speakGenRef.current !== gen) return
+      startTalkIfCurrent()
+      speechStartTime = performance.now()
+      wordEventRef.current = speechStartTime
+      
+      if (visemeRafRef.current) cancelAnimationFrame(visemeRafRef.current)
+      visemeRafRef.current = requestAnimationFrame(updateVisemeLoop)
+    }
 
-    window.setTimeout(() => {
-      if (wordPulseInterval) window.clearInterval(wordPulseInterval)
+    const stopPulse = () => {
+      if (visemeRafRef.current) {
+        cancelAnimationFrame(visemeRafRef.current)
+        visemeRafRef.current = null
+      }
+      if (speechTimeout) {
+        window.clearTimeout(speechTimeout)
+        speechTimeout = null
+      }
+    }
+
+    const finishSpeech = () => {
+      if (speakGenRef.current !== gen) return
+      stopPulse()
+      visemeCurrentRef.current = { viseme: 'sil', nextViseme: 'sil', phase: 0 }
       wordEventRef.current = 0
       endTalkIfCurrent()
-    }, estimatedDuration + 3000)
-  }, [])
+      if (speechAudioRef.current) speechAudioRef.current = null
+      if (speechAudioUrlRef.current) {
+        URL.revokeObjectURL(speechAudioUrlRef.current)
+        speechAudioUrlRef.current = null
+      }
+    }
+
+    const playBrowserSpeechFallback = () => {
+      if (speakGenRef.current !== gen) return
+      if (!('speechSynthesis' in window)) {
+        startPulse()
+        speechTimeout = window.setTimeout(finishSpeech, estimatedDuration)
+        return
+      }
+
+      const utterance = new SpeechSynthesisUtterance(text)
+      activeUtteranceRef.current = utterance // Prevent GC in Chrome/Edge
+      utterance.lang = speechLocale
+      utterance.rate = speechStyle === 'mimic' && targetDurationMs > 0
+        ? Math.max(0.65, Math.min(1.7, (text.length * 85) / Math.max(800, targetDurationMs)))
+        : speechStyle === 'mimic'
+          ? 1.12
+          : 0.92
+      utterance.pitch = speechStyle === 'mimic' ? 1.45 : 1.05
+      utterance.onstart = startPulse
+      utterance.onboundary = (event) => {
+        if (event.name === 'word') {
+          wordEventRef.current = performance.now()
+          
+          // Re-align our timeline clock with the actual speech elapsed time!
+          if (event.elapsedTime !== undefined) {
+            const actualElapsedMs = event.elapsedTime * 1000
+            speechStartTime = performance.now() - actualElapsedMs
+          }
+        }
+      }
+      utterance.onend = () => {
+        activeUtteranceRef.current = null
+        finishSpeech()
+      }
+      utterance.onerror = () => {
+        activeUtteranceRef.current = null
+        finishSpeech()
+      }
+
+      const applyVoiceAndSpeak = () => {
+        try {
+          window.speechSynthesis.resume()
+        } catch {
+          /* ignore */
+        }
+        const voice = pickPreferredVoice(speechLanguage)
+        if (voice) utterance.voice = voice
+        window.speechSynthesis.speak(utterance)
+      }
+
+      const voices = window.speechSynthesis.getVoices()
+      if (voices.length > 0) {
+        window.setTimeout(applyVoiceAndSpeak, 0)
+      } else {
+        let started = false
+        const onVoices = () => startOnce()
+        const startOnce = () => {
+          if (started) return
+          started = true
+          window.speechSynthesis.removeEventListener('voiceschanged', onVoices)
+          window.setTimeout(applyVoiceAndSpeak, 0)
+        }
+        window.speechSynthesis.addEventListener('voiceschanged', onVoices)
+        window.setTimeout(startOnce, 500)
+      }
+
+      window.setTimeout(startPulse, 300)
+      speechTimeout = window.setTimeout(finishSpeech, estimatedDuration + 3000)
+    }
+
+    const playOpenAiSpeech = async () => {
+      try {
+        const response = await fetch(`${import.meta.env.BASE_URL}api/speech`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ text, style: speechStyle, targetDurationMs, language: speechLanguage }),
+        })
+        if (!response.ok) throw new Error('OpenAI speech request failed')
+
+        const blob = await response.blob()
+        if (speakGenRef.current !== gen) return
+
+        const audioUrl = URL.createObjectURL(blob)
+        const audio = new Audio(audioUrl)
+        speechAudioRef.current = audio
+        speechAudioUrlRef.current = audioUrl
+
+        audio.onplaying = startPulse
+        audio.onended = finishSpeech
+        audio.onerror = () => {
+          finishSpeech()
+          playBrowserSpeechFallback()
+        }
+        speechTimeout = window.setTimeout(finishSpeech, estimatedDuration + 15000)
+        await audio.play()
+      } catch (error) {
+        console.error('OpenAI speech error:', error)
+        playBrowserSpeechFallback()
+      }
+    }
+
+    playOpenAiSpeech()
+  }, [languageMode])
 
   // Greeting plays only after user clicks (to unlock audio) and avatar is loaded.
   useEffect(() => {
@@ -203,15 +466,15 @@ function App() {
     const timer = window.setTimeout(() => {
       if (cancelled) return
       hasPlayedGreeting.current = true
-      setMessages([{ text: GREETING_TEXT, role: 'model' }])
-      speak(GREETING_TEXT, false)
+      setMessages([{ text: activeLanguage.greeting, role: 'model' }])
+      speak(activeLanguage.greeting, false)
     }, 300)
 
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [avatarLoaded, userInteracted, speak])
+  }, [avatarLoaded, userInteracted, speak, activeLanguage.greeting])
 
   // Process sending a message
   const handleSend = async (text = inputText) => {
@@ -229,8 +492,8 @@ function App() {
       setAvatarAction('idle')
     }
 
-    // Call Gemini
-    const responseText = await chatWithCompanion(text, messages)
+    // Call the local OpenAI chat endpoint
+    const responseText = await chatWithCompanion(text, messages, languageMode)
     
     setMessages(prev => [...prev, { text: responseText, role: 'model' }])
     
@@ -243,58 +506,273 @@ function App() {
     }
   }
 
-  // STT
-  const toggleListen = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      alert("Your browser does not support Speech Recognition.")
+  const transcribeAudio = async (audioBlob) => {
+    const response = await fetch(`${import.meta.env.BASE_URL}api/transcribe`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': audioBlob.type || 'audio/webm',
+      },
+      body: audioBlob,
+    })
+
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(data.error || 'Transcription failed')
+    }
+
+    return String(data.text || '').trim()
+  }
+
+  const handleMimic = (text, options = {}) => {
+    const mimicText = text.trim()
+    if (!mimicText) return
+
+    setMessages(prev => [
+      ...prev,
+      { text: mimicText, role: 'user' },
+      { text: mimicText, role: 'model' },
+    ])
+    setInputText('')
+    setAvatarAction('talk')
+    speak(mimicText, false, { style: 'mimic', targetDurationMs: options.targetDurationMs, language: languageMode })
+  }
+
+  const handleTextSubmit = async (text = inputText) => {
+    if (isMimicMode) {
+      handleMimic(text)
       return
     }
 
+    await handleSend(text)
+  }
+
+  const showVoiceUnavailable = () => {
+    const unavailableText = activeLanguage.micUnavailable
+    setMessages(prev => [...prev, { text: unavailableText, role: 'model' }])
+    speak(unavailableText, false)
+  }
+
+  const handleTranscribedText = async (transcript, options = {}) => {
+    const cleanTranscript = transcript.trim()
+    if (!cleanTranscript) {
+      const retryText = activeLanguage.micRetry
+      setMessages(prev => [...prev, { text: retryText, role: 'model' }])
+      speak(retryText, false)
+      return
+    }
+
+    setInputText(cleanTranscript)
+    if (recordingModeRef.current === 'mimic') {
+      handleMimic(cleanTranscript, options)
+    } else {
+      await handleSend(cleanTranscript)
+    }
+  }
+
+  const stopVolumeMonitor = () => {
+    if (silenceMonitorRef.current) {
+      window.clearInterval(silenceMonitorRef.current)
+      silenceMonitorRef.current = null
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {})
+      audioContextRef.current = null
+    }
+  }
+
+  const startVolumeMonitor = (stream, recorder) => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextClass) return
+
+    try {
+      const audioContext = new AudioContextClass()
+      const analyser = audioContext.createAnalyser()
+      const source = audioContext.createMediaStreamSource(stream)
+      const samples = new Uint8Array(analyser.fftSize)
+      analyser.fftSize = 2048
+      source.connect(analyser)
+      audioContextRef.current = audioContext
+
+      silenceMonitorRef.current = window.setInterval(() => {
+        analyser.getByteTimeDomainData(samples)
+        let sum = 0
+        for (const sample of samples) {
+          const centered = (sample - 128) / 128
+          sum += centered * centered
+        }
+
+        const volume = Math.sqrt(sum / samples.length)
+        const now = performance.now()
+        if (volume > 0.035) {
+          if (!voiceStartedAtRef.current) voiceStartedAtRef.current = now
+          lastVoiceAtRef.current = now
+        }
+
+        if (
+          recordingModeRef.current === 'mimic' &&
+          voiceStartedAtRef.current &&
+          now - lastVoiceAtRef.current > 850 &&
+          now - recordingStartedAtRef.current > 1200 &&
+          recorder.state === 'recording'
+        ) {
+          recorder.stop()
+        }
+      }, 100)
+    } catch {
+      stopVolumeMonitor()
+    }
+  }
+
+  // Mic recording + OpenAI transcription
+  const toggleListen = async () => {
     if (isListening) {
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop()
+      }
+      const recognition = speechRecognitionRef.current
+      if (recognition) {
+        recognition.stop()
+        speechRecognitionRef.current = null
+      }
       setIsListening(false)
       return
     }
 
-    const recognition = new SpeechRecognition()
-    recognition.lang = 'en-US'
-    recognition.interimResults = false
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      if (SpeechRecognition) {
+        setUserInteracted(true)
+        recordingModeRef.current = isMimicMode ? 'mimic' : 'chat'
+        recordingStartedAtRef.current = performance.now()
+        voiceStartedAtRef.current = recordingStartedAtRef.current
+        lastVoiceAtRef.current = recordingStartedAtRef.current
 
-    recognition.onstart = () => setIsListening(true)
-    recognition.onend = () => setIsListening(false)
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript
-      setInputText(transcript)
-      handleSend(transcript)
+        const recognition = new SpeechRecognition()
+        speechRecognitionRef.current = recognition
+        recognition.lang = activeLanguage.locale
+        recognition.interimResults = false
+        recognition.continuous = false
+        recognition.onstart = () => setIsListening(true)
+        recognition.onend = () => {
+          setIsListening(false)
+          speechRecognitionRef.current = null
+        }
+        recognition.onerror = () => {
+          setIsListening(false)
+          speechRecognitionRef.current = null
+          showVoiceUnavailable()
+        }
+        recognition.onresult = async (event) => {
+          const transcript = Array.from(event.results)
+            .map((result) => result[0]?.transcript || '')
+            .join(' ')
+          const targetDurationMs = Math.max(900, performance.now() - recordingStartedAtRef.current)
+          await handleTranscribedText(transcript, { targetDurationMs })
+        }
+        recognition.start()
+        return
+      }
+
+      if (inputText.trim()) {
+        await handleTextSubmit(inputText)
+      } else {
+        showVoiceUnavailable()
+      }
+      return
     }
 
-    recognition.start()
+    try {
+      setUserInteracted(true)
+      recordingModeRef.current = isMimicMode ? 'mimic' : 'chat'
+      recordingStartedAtRef.current = performance.now()
+      voiceStartedAtRef.current = 0
+      lastVoiceAtRef.current = 0
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const preferredMimeType = MediaRecorder.isTypeSupported?.('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported?.('audio/webm')
+          ? 'audio/webm'
+          : ''
+      const recorder = new MediaRecorder(stream, preferredMimeType ? { mimeType: preferredMimeType } : undefined)
+
+      mediaRecorderRef.current = recorder
+      recordedChunksRef.current = []
+      startVolumeMonitor(stream, recorder)
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size > 0) {
+          recordedChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        if (recordingStopTimerRef.current) {
+          window.clearTimeout(recordingStopTimerRef.current)
+          recordingStopTimerRef.current = null
+        }
+
+        stopVolumeMonitor()
+        setIsListening(false)
+        stream.getTracks().forEach((track) => track.stop())
+
+        const audioBlob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        recordedChunksRef.current = []
+        mediaRecorderRef.current = null
+
+        if (!audioBlob.size) return
+
+        try {
+          const transcript = await transcribeAudio(audioBlob)
+          const spokenDurationMs = voiceStartedAtRef.current && lastVoiceAtRef.current
+            ? Math.max(700, lastVoiceAtRef.current - voiceStartedAtRef.current + 350)
+            : Math.max(900, performance.now() - recordingStartedAtRef.current)
+          await handleTranscribedText(transcript, { targetDurationMs: spokenDurationMs })
+        } catch (error) {
+          console.error('Mic transcription error:', error)
+          const errorText = activeLanguage.micError
+          setMessages(prev => [...prev, { text: errorText, role: 'model' }])
+          speak(errorText, false)
+        }
+      }
+
+      recorder.start()
+      setIsListening(true)
+      recordingStopTimerRef.current = window.setTimeout(() => {
+        if (recorder.state === 'recording') recorder.stop()
+      }, recordingModeRef.current === 'mimic' ? 5000 : 15000)
+    } catch (error) {
+      console.error('Mic start error:', error)
+      stopVolumeMonitor()
+      setIsListening(false)
+      if (inputText.trim()) {
+        await handleTextSubmit(inputText)
+      } else {
+        showVoiceUnavailable()
+      }
+    }
   }
 
   // Get only the latest model message for subtitle display
   const lastModelMsg = [...messages].reverse().find(m => m.role === 'model')
 
-  const runDemoLipSync = () => {
-    setMessages((prev) => [...prev, { text: DEMO_LIP_LINE, role: 'model' }])
-    speak(DEMO_LIP_LINE, false)
+  const toggleDanceMode = () => {
+    setAvatarAction(prev => (prev === 'dance' ? 'idle' : 'dance'))
   }
 
-  const runDemoDance = () => {
-    setAvatarAction('dance')
-    window.setTimeout(() => setAvatarAction('idle'), 8000)
-  }
-
-  const runDemoFakeChat = () => {
-    setMessages((prev) => [
-      ...prev,
-      { text: '[demo] Hello companion', role: 'user' },
-      { text: DEMO_FAKE_REPLY, role: 'model' },
-    ])
-    speak(DEMO_FAKE_REPLY, false)
+  const toggleLanguageMode = () => {
+    setLanguageMode(prev => (prev === 'hi' ? 'en' : 'hi'))
   }
 
   return (
-    <div className="relative w-full h-[100dvh] overflow-hidden">
+    <div
+      className={`companion-root relative w-full h-[100dvh] overflow-hidden ${cursorMode === 'butterfly' ? 'butterfly-cursor-active' : ''}`}
+      onPointerMove={moveButterflyCursor}
+      onPointerEnter={moveButterflyCursor}
+    >
+      {cursorMode === 'butterfly' && <ButterflyCursor cursorRef={butterflyCursorRef} />}
       {/* ── Premium Background Layer Rendering ── */}
       <div className="absolute inset-0 z-0 pointer-events-none select-none transition-colors duration-500">
         {bgMode === 'default' && (
@@ -342,23 +820,23 @@ function App() {
         </div>
       )}
 
-      {/* Floating Background Selector Trigger Button */}
+      {/* Floating Mode Selection Trigger Button */}
       {userInteracted && (
         <div className="absolute top-3 left-3 z-20">
           <button
             onClick={() => setShowBgSelector(!showBgSelector)}
             className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold text-white/90 bg-slate-900/80 border border-slate-700/40 hover:bg-slate-800/90 active:scale-95 transition-all shadow-lg backdrop-blur-md pointer-events-auto"
           >
-            <span>🖼️</span> Background
+            <span>⚙️</span> Mode Selection
           </button>
         </div>
       )}
 
-      {/* Floating Background Selection Panel */}
+      {/* Floating Mode Selection Panel */}
       {showBgSelector && userInteracted && (
         <div className="absolute top-14 left-3 z-30 w-80 rounded-xl border border-slate-700/50 bg-slate-950/90 backdrop-blur-md p-4 text-white shadow-2xl animate-fade-in pointer-events-auto">
           <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-purple-400">Customize Background</h3>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-purple-400">Mode Selection</h3>
             <button 
               onClick={() => setShowBgSelector(false)}
               className="text-slate-400 hover:text-white text-xs transition-colors"
@@ -390,6 +868,51 @@ function App() {
                 <span>{mode.label}</span>
               </button>
             ))}
+          </div>
+
+          <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/45 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Avatar Mode</span>
+              <button
+                type="button"
+                onClick={toggleDanceMode}
+                aria-pressed={avatarAction === 'dance'}
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold transition-all ${
+                  avatarAction === 'dance'
+                    ? 'bg-pink-500 text-white shadow-lg shadow-pink-500/20'
+                    : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                }`}
+              >
+                <span>💃</span>
+                <span>{avatarAction === 'dance' ? 'Dancing' : 'Dance mode'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/45 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Cursor Mode</span>
+              <div className="flex rounded-full bg-slate-800 p-0.5">
+                {[
+                  { id: 'butterfly', label: 'Butterfly' },
+                  { id: 'system', label: 'Normal' },
+                ].map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => setCursorMode(mode.id)}
+                    aria-pressed={cursorMode === mode.id}
+                    className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all ${
+                      cursorMode === mode.id
+                        ? 'bg-cyan-500 text-white shadow-lg shadow-cyan-500/20'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {/* Solid Color Controller Sub-Panel */}
@@ -512,40 +1035,13 @@ function App() {
           bgMode={bgMode}
           onAvatarLoaded={onAvatarLoaded}
           wordEventRef={wordEventRef}
+          visemeCurrentRef={visemeCurrentRef}
           onDance={() => {
             setAvatarAction('dance')
             setTimeout(() => setAvatarAction('idle'), 8000)
           }}
         />
       </Suspense>
-
-      {showDemoPanel && (
-        <div className="absolute top-3 right-3 z-20 pointer-events-auto flex flex-col gap-1.5 rounded-lg border border-slate-600/40 bg-slate-950/85 backdrop-blur-sm p-2 max-w-[11rem] shadow-xl">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400 px-0.5">Demo</p>
-          <button
-            type="button"
-            onClick={runDemoLipSync}
-            className="rounded-md bg-slate-800/90 px-2 py-1.5 text-left text-[11px] text-slate-100 hover:bg-slate-700/90 transition-colors">
-            Lip sync + TTS
-          </button>
-          <button
-            type="button"
-            onClick={runDemoDance}
-            className="rounded-md bg-slate-800/90 px-2 py-1.5 text-left text-[11px] text-slate-100 hover:bg-slate-700/90 transition-colors">
-            Dance 8s
-          </button>
-          <button
-            type="button"
-            onClick={runDemoFakeChat}
-            className="rounded-md bg-slate-800/90 px-2 py-1.5 text-left text-[11px] text-slate-100 hover:bg-slate-700/90 transition-colors">
-            Fake chat reply
-          </button>
-          <p className="text-[9px] leading-tight text-slate-500 px-0.5">
-            Prod: add <span className="text-slate-400">?demo=1</span> or{' '}
-            <span className="text-slate-400">VITE_SHOW_DEMO=true</span>
-          </p>
-        </div>
-      )}
 
       {/* Minimal subtitle — only latest message, small text, doesn't block character */}
       {lastModelMsg && (
@@ -558,25 +1054,44 @@ function App() {
 
       {/* Compact input bar — slim and unobtrusive */}
       <div className="absolute bottom-3 inset-x-0 z-10 flex justify-center px-4 pointer-events-none">
-        <div className="bg-slate-900/60 backdrop-blur-md p-1 flex gap-1 rounded-full shadow-lg pointer-events-auto max-w-sm w-full border border-slate-700/30">
+        <div className="bg-slate-900/60 backdrop-blur-md p-1 flex gap-1 rounded-full shadow-lg pointer-events-auto max-w-lg w-full border border-slate-700/30">
           <input 
             type="text" 
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="Say something..." 
-            className="flex-1 bg-transparent border-none px-3 py-1.5 text-white placeholder-slate-500 focus:outline-none text-xs"
+            onKeyDown={(e) => e.key === 'Enter' && handleTextSubmit()}
+            placeholder={activeLanguage.placeholder}
+            className="min-w-0 flex-1 bg-transparent border-none px-3 py-1.5 text-white placeholder-slate-500 focus:outline-none text-xs"
           />
+          <button
+            type="button"
+            onClick={toggleLanguageMode}
+            aria-label={`Switch language mode. Current mode: ${activeLanguage.label}`}
+            className="h-8 min-w-9 shrink-0 rounded-full bg-slate-800/80 px-2 text-[11px] font-bold text-cyan-100 transition-all hover:bg-slate-700"
+            title={`Mode: ${activeLanguage.label}`}
+          >
+            {activeLanguage.code}
+          </button>
           <button 
-            onClick={() => handleSend()}
+            onClick={() => handleTextSubmit()}
             className="px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white text-xs font-medium transition-all">
-            Send
+            {isMimicMode ? 'Mimic' : 'Send'}
+          </button>
+          <button
+            onClick={() => setIsMimicMode(prev => !prev)}
+            disabled={isListening}
+            aria-pressed={isMimicMode}
+            aria-label="Mimic voice mode"
+            className={`w-8 h-8 shrink-0 rounded-full text-white transition-all ${isMimicMode ? 'bg-cyan-500 shadow-lg shadow-cyan-500/20' : 'bg-slate-700/50 hover:bg-slate-600/50'} ${isListening ? 'opacity-60 cursor-not-allowed' : ''}`}
+            title={isMimicMode ? 'Mimic mode on' : 'Mimic voice'}>
+            <span className="text-sm">🗣️</span>
           </button>
           <button 
             onClick={toggleListen}
-            className={`p-1.5 rounded-full text-white transition-all ${isListening ? 'bg-red-500 animate-pulse' : 'bg-slate-700/50 hover:bg-slate-600/50'}`} 
-            title="Voice">
-            <span className="text-sm">{isListening ? '🛑' : '🎙️'}</span>
+            aria-label={isMimicMode ? 'Record and mimic voice' : 'Record voice'}
+            className={`w-8 h-8 shrink-0 rounded-full text-white transition-all ${isListening ? 'bg-red-500 animate-pulse' : isMimicMode ? 'bg-cyan-600 hover:bg-cyan-500' : 'bg-slate-700/50 hover:bg-slate-600/50'}`} 
+            title={isMimicMode ? 'Record and mimic' : 'Voice'}>
+            <span className="text-sm">{isListening ? '🛑' : isMimicMode ? '🗣️' : '🎙️'}</span>
           </button>
         </div>
       </div>
