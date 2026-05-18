@@ -211,6 +211,38 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
     return morphs.length > 0 ? morphs : null
   }, [scene])
 
+  const expressionMorphs = useMemo(() => {
+    if (!scene) return null
+    const morphs = []
+    const getExpressionWeight = (name) => {
+      const lower = name.toLowerCase().trim()
+      if (
+        lower.includes('viseme') ||
+        lower.includes('jawopen') ||
+        lower.includes('mouthopen') ||
+        lower.includes('blink') ||
+        lower.includes('eyeclosed') ||
+        lower.includes('eye_close')
+      ) {
+        return 0
+      }
+      if (lower.includes('smile') || lower.includes('happy') || lower.includes('mouth_smile')) return 0.28
+      if (lower.includes('cheek') && (lower.includes('raise') || lower.includes('squint'))) return 0.16
+      if (lower.includes('brow') && (lower.includes('up') || lower.includes('raise'))) return 0.1
+      if (lower.includes('eye') && lower.includes('wide')) return 0.06
+      return 0
+    }
+
+    scene.traverse((child) => {
+      if (!child.isSkinnedMesh || !child.morphTargetDictionary || !child.morphTargetInfluences) return
+      for (const [name, index] of Object.entries(child.morphTargetDictionary)) {
+        const weight = getExpressionWeight(name)
+        if (weight > 0) morphs.push({ mesh: child, index, weight })
+      }
+    })
+    return morphs.length > 0 ? morphs : null
+  }, [scene])
+
   // Play dance keyframe animation
   useEffect(() => {
     if (action === 'dance' && danceAnim) {
@@ -293,6 +325,15 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       const e = isNaN(end) ? 0 : end;
       const res = THREE.MathUtils.lerp(s, e, amt);
       return isNaN(res) ? 0 : res;
+    }
+
+    const applyExpression = (amount, speed = 0.1) => {
+      if (!expressionMorphs) return
+      for (const morph of expressionMorphs) {
+        const current = morph.mesh.morphTargetInfluences[morph.index] || 0
+        const target = amount * morph.weight
+        morph.mesh.morphTargetInfluences[morph.index] = current + (target - current) * speed
+      }
     }
 
     if (yawGroupRef.current && yawRef && !isNaN(yawRef.current)) {
@@ -386,6 +427,7 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
           m.mesh.morphTargetInfluences[m.index] *= 0.9
         }
       }
+      applyExpression(0, 0.18)
       return
     }
 
@@ -457,6 +499,7 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
           m.mesh.morphTargetInfluences[m.index] *= 0.9
         }
       }
+      applyExpression(0, 0.08)
 
     } else if (action === 'talk') {
       // ── Precise Text-to-Viseme Lip Sync (TalkingHead Port) ──
@@ -516,13 +559,13 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
           m.mesh.morphTargetInfluences[m.index] = current + (target - current) * 0.45
         }
       }
+      applyExpression(isSpeaking ? 1 : 0.35, 0.12)
 
       if (bJaw) {
         bJaw.rotation.x = safeLerp(bJaw.rotation.x, Math.max(0, jawTarget), 0.35)
         bJaw.rotation.z = safeLerp(bJaw.rotation.z, 0, 0.1)
       }
 
-      const hasMorphDriver = mouthMorphs && mouthMorphs.length > 0
       const mouthProxy = isSpeaking ? 0.1 : 0
 
       // Subtle body movement while talking — no cursor tracking

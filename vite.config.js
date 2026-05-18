@@ -109,6 +109,7 @@ function openAiChatPlugin() {
             }
 
             const isMimicSpeech = speechStyle === 'mimic'
+            const isReadSpeech = speechStyle === 'read'
             const targetSeconds = targetDurationMs > 0
               ? Math.max(0.7, Math.min(12, targetDurationMs / 1000))
               : 0
@@ -119,6 +120,9 @@ function openAiChatPlugin() {
             const teacherSpeechInstructions = requestLanguage === 'en'
               ? 'Speak in clear, natural English with a warm teacher-like tone.'
               : 'Speak in clear, natural Hindi with a warm teacher-like tone.'
+            const readSpeechInstructions = requestLanguage === 'en'
+              ? 'Read the input text exactly in clear English. Use a warm expressive voice, pause naturally at commas and sentence endings, and keep every word easy to understand.'
+              : 'Read the input text exactly in clear Hindi or Hinglish. Use a warm expressive voice, pause naturally at commas and sentence endings, and keep every word easy to understand.'
             const speechInstructions = isMimicSpeech
               ? [
                 'Repeat the input text exactly with no extra words.',
@@ -129,7 +133,9 @@ function openAiChatPlugin() {
                   ? `Match the user's speaking pace; aim for about ${targetSeconds.toFixed(1)} seconds total.`
                   : 'Use a quick playful pace.',
               ].join(' ')
-              : teacherSpeechInstructions
+              : isReadSpeech
+                ? readSpeechInstructions
+                : teacherSpeechInstructions
 
             const openAiSpeechResponse = await fetch('https://api.openai.com/v1/audio/speech', {
               method: 'POST',
@@ -143,7 +149,7 @@ function openAiChatPlugin() {
                 input: speechText.slice(0, 4000),
                 instructions: speechInstructions,
                 response_format: 'mp3',
-                speed: isMimicSpeech ? mimicSpeed : 1,
+                speed: isMimicSpeech ? mimicSpeed : isReadSpeech ? 0.94 : 1,
               }),
             })
 

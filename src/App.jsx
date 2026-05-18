@@ -19,6 +19,10 @@ const LANGUAGE_COPY = {
     micRetry: 'मुझे आवाज़ साफ़ नहीं सुनाई दी। कृपया फिर से बोलिए।',
     micError: 'माइक से आवाज़ पढ़ने में दिक्कत आ रही है। कृपया फिर कोशिश करें।',
     micUnavailable: 'इस ब्राउज़र में माइक उपलब्ध नहीं है। Mimic mode में लिखकर Send दबाएं, मैं वही बोलकर दोहराऊंगी।',
+    mimicPlaceholder: 'माइक दबाकर बोलिए...',
+    mimicListening: 'सुन रही हूं...',
+    sendButton: 'Send',
+    readButton: 'टेक्स्ट पढ़ें',
   },
   en: {
     code: 'EN',
@@ -29,7 +33,67 @@ const LANGUAGE_COPY = {
     micRetry: 'I could not hear that clearly. Please try speaking again.',
     micError: 'I had trouble reading the microphone audio. Please try again.',
     micUnavailable: 'This browser cannot access the microphone. In Mimic mode, type and press Send, and I will repeat it.',
+    mimicPlaceholder: 'Press mic and speak...',
+    mimicListening: 'Listening...',
+    sendButton: 'Send',
+    readButton: 'Read Text',
   },
+}
+
+const MARQUEE_WORDS = [
+  'NIPUNUP',
+  'NIPUNBHARAT',
+  'NIPUNJHANSI',
+  'BASIC EDUCATION DEPARTMENT',
+  'PRIMARY EDUCATION',
+]
+
+const MARQUEE_ROWS = [
+  { id: 'row-1', top: '12%', duration: '26s', delay: '-4s', scale: 0.98, opacity: 0.78 },
+  { id: 'row-2', top: '25%', duration: '34s', delay: '-11s', scale: 0.86, opacity: 0.66, reverse: true },
+  { id: 'row-3', top: '38%', duration: '22s', delay: '-17s', scale: 0.94, opacity: 0.74 },
+  { id: 'row-4', top: '51%', duration: '39s', delay: '-8s', scale: 0.8, opacity: 0.62, reverse: true },
+  { id: 'row-5', top: '64%', duration: '29s', delay: '-15s', scale: 0.88, opacity: 0.7 },
+  { id: 'row-6', top: '77%', duration: '45s', delay: '-22s', scale: 0.74, opacity: 0.58, reverse: true },
+]
+
+const LIGHTING_MODES = [
+  { id: 'studio', label: 'Studio', icon: '💡' },
+  { id: 'warm', label: 'Warm', icon: '🌇' },
+  { id: 'cool', label: 'Cool', icon: '❄️' },
+  { id: 'neon', label: 'Neon', icon: '🌈' },
+  { id: 'night', label: 'Night', icon: '🌙' },
+]
+
+const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value))
+
+function getMimicSpeechStats(text) {
+  const compactLength = text.replace(/\s+/g, '').length
+  const wordCount = Math.max(1, text.trim().split(/\s+/).filter(Boolean).length)
+  const naturalDurationMs = Math.max(900, compactLength * 78, wordCount * 360)
+  return { compactLength, wordCount, naturalDurationMs }
+}
+
+function detectTextLanguage(text, fallback = 'hi') {
+  const devanagariCount = (text.match(/[\u0900-\u097F]/g) || []).length
+  const latinCount = (text.match(/[A-Za-z]/g) || []).length
+  if (devanagariCount === 0 && latinCount === 0) return fallback
+  return devanagariCount >= Math.max(2, latinCount * 0.35) ? 'hi' : 'en'
+}
+
+function prepareReadableText(text) {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/([।.!?])\s*/g, '$1 ')
+    .replace(/([,;:])\s*/g, '$1 ')
+    .replace(/\s+(और|लेकिन|क्योंकि|परंतु|so|but|because|however)\s+/gi, ', $1 ')
+    .trim()
+}
+
+function estimateReadDurationMs(text) {
+  const { compactLength, wordCount } = getMimicSpeechStats(text)
+  const punctuationPauses = (text.match(/[।.!?,;:]/g) || []).length * 260
+  return Math.max(1800, Math.min(24000, compactLength * 92 + wordCount * 340 + punctuationPauses + 900))
 }
 
 function pickPreferredVoice(languageMode = 'hi') {
@@ -68,6 +132,7 @@ function App() {
   const [isMimicMode, setIsMimicMode] = useState(false)
   const [languageMode, setLanguageMode] = useState('hi')
   const [cursorMode, setCursorMode] = useState('butterfly')
+  const [lightingMode, setLightingMode] = useState('studio')
   const [avatarLoaded, setAvatarLoaded] = useState(false)
   const [userInteracted, setUserInteracted] = useState(false)
   const chatEndRef = useRef(null)
@@ -84,6 +149,10 @@ function App() {
   const recordingStartedAtRef = useRef(0)
   const voiceStartedAtRef = useRef(0)
   const lastVoiceAtRef = useRef(0)
+  const mimicFlushTimerRef = useRef(null)
+  const mimicRestartTimerRef = useRef(null)
+  const mimicAutoRestartRef = useRef(false)
+  const mimicRateRef = useRef(0.92)
   const silenceMonitorRef = useRef(null)
   const audioContextRef = useRef(null)
   const wordEventRef = useRef(0) // kept for fallback timing
@@ -96,7 +165,7 @@ function App() {
   const butterflyLastPointRef = useRef(null)
 
   // ── Custom Background States & Presets ──
-  const [bgMode, setBgMode] = useState('default') // 'default' | 'solid' | 'splashes' | 'gradual' | 'wallpaper'
+  const [bgMode, setBgMode] = useState('default') // 'default' | 'solid' | 'splashes' | 'gradual' | 'wallpaper' | 'marquee_text'
   const [solidColor, setSolidColor] = useState('#0f172a')
   const [wallpaperUrl, setWallpaperUrl] = useState('https://images.unsplash.com/photo-1507842217343-583bb7270b66?q=80&w=1200')
   const [customWallpaper, setCustomWallpaper] = useState(null)
@@ -235,9 +304,28 @@ function App() {
     const speechLanguage = speechOptions.language || languageMode
     const speechLocale = LANGUAGE_COPY[speechLanguage]?.locale || HINDI_LANG
     const targetDurationMs = Number(speechOptions.targetDurationMs || 0)
-    const estimatedDuration = targetDurationMs > 0
-      ? Math.max(1600, Math.min(15000, targetDurationMs + 1200))
-      : Math.max(3500, text.length * 85)
+    const requestedMimicRate = Number(speechOptions.mimicRate || 0)
+    const onSpeechComplete = typeof speechOptions.onComplete === 'function' ? speechOptions.onComplete : null
+    const { naturalDurationMs: mimicNaturalDuration } = getMimicSpeechStats(text)
+    const isMimicSpeech = speechStyle === 'mimic'
+    const isReadSpeech = speechStyle === 'read'
+    const mimicSpeechRate = isMimicSpeech
+      ? requestedMimicRate > 0
+        ? clampNumber(requestedMimicRate, 0.72, 1.0)
+        : targetDurationMs > 0
+          ? clampNumber(mimicNaturalDuration / Math.max(850, targetDurationMs), 0.72, 1.0)
+          : 0.88
+      : 0.92
+    const browserSpeechRate = isMimicSpeech ? mimicSpeechRate : isReadSpeech ? 0.88 : 0.92
+    const browserSpeechPitch = isMimicSpeech ? 1.08 : isReadSpeech ? 1.02 : 1.05
+    let estimatedDuration = Math.max(3500, text.length * 85)
+    if (isMimicSpeech) {
+      estimatedDuration = Math.max(1400, Math.min(17000, mimicNaturalDuration / Math.max(0.68, mimicSpeechRate) + 700))
+    } else if (isReadSpeech && targetDurationMs > 0) {
+      estimatedDuration = Math.max(1800, Math.min(26000, targetDurationMs + 900))
+    } else if (targetDurationMs > 0) {
+      estimatedDuration = Math.max(1600, Math.min(15000, targetDurationMs + 1200))
+    }
 
     if (speechAudioRef.current) {
       speechAudioRef.current.pause()
@@ -258,9 +346,9 @@ function App() {
       if (!isDancing && speakGenRef.current === gen) setAvatarAction('idle')
     }
 
-    let wordPulseInterval = null
     let speechTimeout = null
     let speechStartTime = 0
+    let hasFinishedSpeech = false
 
     // Generate the exact viseme timeline for the spoken text based on language
     if (speechLanguage === 'hi') {
@@ -342,6 +430,8 @@ function App() {
 
     const finishSpeech = () => {
       if (speakGenRef.current !== gen) return
+      if (hasFinishedSpeech) return
+      hasFinishedSpeech = true
       stopPulse()
       visemeCurrentRef.current = { viseme: 'sil', nextViseme: 'sil', phase: 0 }
       wordEventRef.current = 0
@@ -350,6 +440,11 @@ function App() {
       if (speechAudioUrlRef.current) {
         URL.revokeObjectURL(speechAudioUrlRef.current)
         speechAudioUrlRef.current = null
+      }
+      if (onSpeechComplete) {
+        window.setTimeout(() => {
+          if (speakGenRef.current === gen) onSpeechComplete()
+        }, 160)
       }
     }
 
@@ -364,12 +459,9 @@ function App() {
       const utterance = new SpeechSynthesisUtterance(text)
       activeUtteranceRef.current = utterance // Prevent GC in Chrome/Edge
       utterance.lang = speechLocale
-      utterance.rate = speechStyle === 'mimic' && targetDurationMs > 0
-        ? Math.max(0.65, Math.min(1.7, (text.length * 85) / Math.max(800, targetDurationMs)))
-        : speechStyle === 'mimic'
-          ? 1.12
-          : 0.92
-      utterance.pitch = speechStyle === 'mimic' ? 1.45 : 1.05
+      utterance.rate = browserSpeechRate
+      utterance.pitch = browserSpeechPitch
+      utterance.volume = 1
       utterance.onstart = startPulse
       utterance.onboundary = (event) => {
         if (event.name === 'word') {
@@ -455,7 +547,11 @@ function App() {
       }
     }
 
-    playOpenAiSpeech()
+    if (isMimicSpeech) {
+      playBrowserSpeechFallback()
+    } else {
+      playOpenAiSpeech()
+    }
   }, [languageMode])
 
   // Greeting plays only after user clicks (to unlock audio) and avatar is loaded.
@@ -534,12 +630,45 @@ function App() {
     ])
     setInputText('')
     setAvatarAction('talk')
-    speak(mimicText, false, { style: 'mimic', targetDurationMs: options.targetDurationMs, language: languageMode })
+    const restartAfterSpeech = options.restartAfterSpeech === true
+    speak(mimicText, false, {
+      style: 'mimic',
+      targetDurationMs: options.targetDurationMs,
+      mimicRate: options.mimicRate,
+      language: languageMode,
+      onComplete: restartAfterSpeech
+        ? () => {
+            if (mimicAutoRestartRef.current) restartMimicListening(180)
+          }
+        : undefined,
+    })
+  }
+
+  const handleReadText = (text = inputText) => {
+    const rawText = text.trim()
+    if (!rawText) return
+
+    const detectedLanguage = detectTextLanguage(rawText, languageMode)
+    const readableText = prepareReadableText(rawText)
+    const targetDurationMs = estimateReadDurationMs(readableText)
+
+    setMessages(prev => [
+      ...prev,
+      { text: rawText, role: 'user' },
+      { text: rawText, role: 'model' },
+    ])
+    setInputText('')
+    setAvatarAction('talk')
+    speak(readableText, false, {
+      style: 'read',
+      language: detectedLanguage,
+      targetDurationMs,
+    })
   }
 
   const handleTextSubmit = async (text = inputText) => {
     if (isMimicMode) {
-      handleMimic(text)
+      handleReadText(text)
       return
     }
 
@@ -568,6 +697,192 @@ function App() {
       await handleSend(cleanTranscript)
     }
   }
+
+  const clearMimicFlushTimer = () => {
+    if (mimicFlushTimerRef.current) {
+      window.clearTimeout(mimicFlushTimerRef.current)
+      mimicFlushTimerRef.current = null
+    }
+  }
+
+  const clearMimicRestartTimer = () => {
+    if (mimicRestartTimerRef.current) {
+      window.clearTimeout(mimicRestartTimerRef.current)
+      mimicRestartTimerRef.current = null
+    }
+  }
+
+  const restartMimicListening = (delayMs = 700) => {
+    clearMimicRestartTimer()
+    mimicRestartTimerRef.current = window.setTimeout(() => {
+      mimicRestartTimerRef.current = null
+      if (!mimicAutoRestartRef.current || speechRecognitionRef.current || mediaRecorderRef.current) return
+      startBrowserSpeechRecognition('mimic')
+    }, delayMs)
+  }
+
+  const startBrowserSpeechRecognition = (mode = isMimicMode ? 'mimic' : 'chat') => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) return false
+
+    setUserInteracted(true)
+    if (mode === 'mimic') mimicAutoRestartRef.current = true
+    recordingModeRef.current = mode
+    recordingStartedAtRef.current = performance.now()
+    voiceStartedAtRef.current = recordingStartedAtRef.current
+    lastVoiceAtRef.current = recordingStartedAtRef.current
+    clearMimicFlushTimer()
+
+    const recognition = new SpeechRecognition()
+    speechRecognitionRef.current = recognition
+    recognition.lang = activeLanguage.locale
+    recognition.interimResults = false
+    recognition.continuous = false
+    recognition.maxAlternatives = 1
+
+    let finalChunk = ''
+    let chunkStartedAt = recordingStartedAtRef.current
+    let phraseEndedAt = 0
+    let hasPendingMimicSpeech = false
+    let hasFlushedMimicSpeech = false
+
+    const flushMimicChunk = async () => {
+      if (hasFlushedMimicSpeech) return
+      const text = finalChunk.trim()
+      finalChunk = ''
+      if (!text) return
+      hasFlushedMimicSpeech = true
+
+      const measuredEndMs = phraseEndedAt || performance.now()
+      const measuredDurationMs = Math.max(0, measuredEndMs - chunkStartedAt)
+      const { compactLength, wordCount, naturalDurationMs } = getMimicSpeechStats(text)
+      const minimumHeardDurationMs = Math.max(620, compactLength * 34, wordCount * 210)
+      const heardDurationMs = Math.max(minimumHeardDurationMs, measuredDurationMs + 160)
+      const rawRate = clampNumber(naturalDurationMs / Math.max(620, heardDurationMs), 0.68, 1.04)
+      const previousRate = mimicRateRef.current || 0.92
+      const confidence = wordCount >= 5 || compactLength >= 24
+        ? 0.45
+        : wordCount >= 3 || compactLength >= 14
+          ? 0.34
+          : 0.18
+      const maxRateStep = wordCount >= 4 || compactLength >= 20 ? 0.11 : 0.06
+      const blendedRate = previousRate + (rawRate - previousRate) * confidence
+      const mimicRate = clampNumber(
+        clampNumber(blendedRate, previousRate - maxRateStep, previousRate + maxRateStep),
+        0.72,
+        1.0,
+      )
+      const spokenDurationMs = Math.max(900, naturalDurationMs / mimicRate)
+      chunkStartedAt = performance.now()
+      hasPendingMimicSpeech = false
+      mimicRateRef.current = mimicRate
+      if (speechRecognitionRef.current === recognition) {
+        try {
+          recognition.stop()
+        } catch {
+          /* ignore */
+        }
+      }
+      await handleTranscribedText(text, {
+        targetDurationMs: spokenDurationMs,
+        mimicRate,
+        restartAfterSpeech: mode === 'mimic',
+      })
+    }
+
+    recognition.onstart = () => setIsListening(true)
+    recognition.onspeechstart = () => {
+      if (mode !== 'mimic') return
+      chunkStartedAt = performance.now()
+      phraseEndedAt = 0
+      hasPendingMimicSpeech = true
+      hasFlushedMimicSpeech = false
+    }
+    recognition.onspeechend = () => {
+      if (mode !== 'mimic') return
+      phraseEndedAt = performance.now()
+      try {
+        recognition.stop()
+      } catch {
+        /* ignore */
+      }
+    }
+    recognition.onend = () => {
+      clearMimicFlushTimer()
+      if (mode === 'mimic' && finalChunk.trim()) void flushMimicChunk()
+      speechRecognitionRef.current = null
+      setIsListening(false)
+    }
+    recognition.onerror = (event) => {
+      clearMimicFlushTimer()
+      speechRecognitionRef.current = null
+      setIsListening(false)
+      if (event?.error === 'no-speech' && mode === 'mimic' && mimicAutoRestartRef.current) {
+        restartMimicListening(350)
+      } else if (event?.error !== 'no-speech') {
+        showVoiceUnavailable()
+      }
+    }
+    recognition.onresult = async (event) => {
+      let interimText = ''
+      let completedText = ''
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        const transcript = result[0]?.transcript || ''
+        if (result.isFinal) completedText += `${transcript} `
+        else interimText += `${transcript} `
+      }
+
+      if (mode === 'mimic') {
+        const heardText = `${completedText} ${interimText}`.trim()
+        if (heardText && !hasPendingMimicSpeech) {
+          chunkStartedAt = performance.now()
+          phraseEndedAt = 0
+          hasPendingMimicSpeech = true
+        }
+        finalChunk = `${finalChunk} ${completedText}`.trim()
+
+        const previewText = `${finalChunk} ${interimText}`.trim()
+        if (previewText) setInputText(previewText)
+
+        if (completedText.trim()) {
+          clearMimicFlushTimer()
+          mimicFlushTimerRef.current = window.setTimeout(flushMimicChunk, 220)
+        }
+        return
+      }
+
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript || '')
+        .join(' ')
+      const targetDurationMs = Math.max(900, performance.now() - recordingStartedAtRef.current)
+      await handleTranscribedText(transcript, { targetDurationMs })
+    }
+
+    try {
+      recognition.start()
+      return true
+    } catch (error) {
+      console.error('Speech recognition start error:', error)
+      speechRecognitionRef.current = null
+      setIsListening(false)
+      return false
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      mimicAutoRestartRef.current = false
+      clearMimicFlushTimer()
+      clearMimicRestartTimer()
+      try {
+        speechRecognitionRef.current?.stop()
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [])
 
   const stopVolumeMonitor = () => {
     if (silenceMonitorRef.current) {
@@ -627,6 +942,9 @@ function App() {
   // Mic recording + OpenAI transcription
   const toggleListen = async () => {
     if (isListening) {
+      mimicAutoRestartRef.current = false
+      clearMimicFlushTimer()
+      clearMimicRestartTimer()
       const recorder = mediaRecorderRef.current
       if (recorder && recorder.state !== 'inactive') {
         recorder.stop()
@@ -641,37 +959,13 @@ function App() {
     }
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      if (SpeechRecognition) {
-        setUserInteracted(true)
-        recordingModeRef.current = isMimicMode ? 'mimic' : 'chat'
-        recordingStartedAtRef.current = performance.now()
-        voiceStartedAtRef.current = recordingStartedAtRef.current
-        lastVoiceAtRef.current = recordingStartedAtRef.current
 
-        const recognition = new SpeechRecognition()
-        speechRecognitionRef.current = recognition
-        recognition.lang = activeLanguage.locale
-        recognition.interimResults = false
-        recognition.continuous = false
-        recognition.onstart = () => setIsListening(true)
-        recognition.onend = () => {
-          setIsListening(false)
-          speechRecognitionRef.current = null
-        }
-        recognition.onerror = () => {
-          setIsListening(false)
-          speechRecognitionRef.current = null
-          showVoiceUnavailable()
-        }
-        recognition.onresult = async (event) => {
-          const transcript = Array.from(event.results)
-            .map((result) => result[0]?.transcript || '')
-            .join(' ')
-          const targetDurationMs = Math.max(900, performance.now() - recordingStartedAtRef.current)
-          await handleTranscribedText(transcript, { targetDurationMs })
-        }
-        recognition.start()
+    if (isMimicMode && startBrowserSpeechRecognition('mimic')) {
+      return
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      if (SpeechRecognition && startBrowserSpeechRecognition(isMimicMode ? 'mimic' : 'chat')) {
         return
       }
 
@@ -686,6 +980,7 @@ function App() {
     try {
       setUserInteracted(true)
       recordingModeRef.current = isMimicMode ? 'mimic' : 'chat'
+      mimicAutoRestartRef.current = false
       recordingStartedAtRef.current = performance.now()
       voiceStartedAtRef.current = 0
       lastVoiceAtRef.current = 0
@@ -766,6 +1061,19 @@ function App() {
     setLanguageMode(prev => (prev === 'hi' ? 'en' : 'hi'))
   }
 
+  const toggleMimicMode = () => {
+    if (isListening) return
+
+    clearMimicFlushTimer()
+    clearMimicRestartTimer()
+    setIsMimicMode(prev => {
+      const next = !prev
+      mimicAutoRestartRef.current = next
+      if (next) mimicRateRef.current = 0.92
+      return next
+    })
+  }
+
   return (
     <div
       className={`companion-root relative w-full h-[100dvh] overflow-hidden ${cursorMode === 'butterfly' ? 'butterfly-cursor-active' : ''}`}
@@ -802,6 +1110,37 @@ function App() {
           >
             {/* Elegant overlay to maintain contrast with the 3D character */}
             <div className="absolute inset-0 bg-slate-950/65 backdrop-blur-[1px]" />
+          </div>
+        )}
+
+        {bgMode === 'marquee_text' && (
+          <div className="marquee-background" aria-hidden="true">
+            <div className="marquee-background__room" />
+            <div className="marquee-background__floor" />
+            <div className="marquee-background__wash" />
+            {MARQUEE_ROWS.map((row) => (
+              <div
+                key={row.id}
+                className={`marquee-background__row ${row.reverse ? 'is-reverse' : ''}`}
+                style={{
+                  top: row.top,
+                  '--marquee-duration': row.duration,
+                  '--marquee-delay': row.delay,
+                  '--marquee-scale': row.scale,
+                  '--marquee-opacity': row.opacity,
+                }}
+              >
+                <div className="marquee-background__track">
+                  {[0, 1].map((groupIndex) => (
+                    <div key={groupIndex} className="marquee-background__group">
+                      {MARQUEE_WORDS.map((word) => (
+                        <span key={`${row.id}-${groupIndex}-${word}`}>{word}</span>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -854,6 +1193,7 @@ function App() {
               { id: 'gradual', label: 'Flow', icon: '🌈' },
               { id: 'wallpaper', label: 'Wall', icon: '🏠' },
               { id: 'sitting_room', label: '3D Room', icon: '🖥️' },
+              { id: 'marquee_text', label: 'Nipun', icon: '🔠' },
             ].map((mode) => (
               <button
                 key={mode.id}
@@ -912,6 +1252,34 @@ function App() {
                   </button>
                 ))}
               </div>
+            </div>
+          </div>
+
+          <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/45 p-2">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Lighting Mode</span>
+              <span className="text-[10px] font-medium text-slate-500">
+                {LIGHTING_MODES.find((mode) => mode.id === lightingMode)?.label}
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-1">
+              {LIGHTING_MODES.map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => setLightingMode(mode.id)}
+                  aria-pressed={lightingMode === mode.id}
+                  title={`${mode.label} lighting`}
+                  className={`flex flex-col items-center gap-1 rounded-lg border px-1.5 py-1.5 text-[9px] font-semibold transition-all ${
+                    lightingMode === mode.id
+                      ? 'border-amber-300/80 bg-amber-400/20 text-white shadow-lg shadow-amber-400/10'
+                      : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                  }`}
+                >
+                  <span className="text-sm leading-none">{mode.icon}</span>
+                  <span>{mode.label}</span>
+                </button>
+              ))}
             </div>
           </div>
 
@@ -1017,12 +1385,13 @@ function App() {
           )}
 
           {/* Flowing Splashes / Gradual Details */}
-          {(bgMode === 'default' || bgMode === 'splashes' || bgMode === 'gradual' || bgMode === 'sitting_room') && (
+          {(bgMode === 'default' || bgMode === 'splashes' || bgMode === 'gradual' || bgMode === 'sitting_room' || bgMode === 'marquee_text') && (
             <div className="text-[10px] text-slate-500 bg-slate-900/30 p-2 rounded border border-slate-900/50 text-center animate-slide-up">
               {bgMode === 'default' && 'Premium deep slate space background with floor shadows.'}
               {bgMode === 'splashes' && 'Gorgeous animated background with slow glowing color splashes.'}
               {bgMode === 'gradual' && 'Calm color gradients gradually flowing over time.'}
               {bgMode === 'sitting_room' && 'Full 3D technological classroom with wood desk, mesh chair, and glowing computer setup.'}
+              {bgMode === 'marquee_text' && 'NIPUN text rows moving at mixed speeds.'}
             </div>
           )}
         </div>
@@ -1033,6 +1402,7 @@ function App() {
         <AvatarCanvas
           action={avatarAction}
           bgMode={bgMode}
+          lightingMode={lightingMode}
           onAvatarLoaded={onAvatarLoaded}
           wordEventRef={wordEventRef}
           visemeCurrentRef={visemeCurrentRef}
@@ -1060,7 +1430,7 @@ function App() {
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleTextSubmit()}
-            placeholder={activeLanguage.placeholder}
+            placeholder={isMimicMode ? (isListening ? activeLanguage.mimicListening : activeLanguage.mimicPlaceholder) : activeLanguage.placeholder}
             className="min-w-0 flex-1 bg-transparent border-none px-3 py-1.5 text-white placeholder-slate-500 focus:outline-none text-xs"
           />
           <button
@@ -1074,11 +1444,11 @@ function App() {
           </button>
           <button 
             onClick={() => handleTextSubmit()}
-            className="px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white text-xs font-medium transition-all">
-            {isMimicMode ? 'Mimic' : 'Send'}
+            className="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 text-white text-xs font-medium transition-all">
+            {isMimicMode ? activeLanguage.readButton : activeLanguage.sendButton}
           </button>
           <button
-            onClick={() => setIsMimicMode(prev => !prev)}
+            onClick={toggleMimicMode}
             disabled={isListening}
             aria-pressed={isMimicMode}
             aria-label="Mimic voice mode"
@@ -1090,8 +1460,8 @@ function App() {
             onClick={toggleListen}
             aria-label={isMimicMode ? 'Record and mimic voice' : 'Record voice'}
             className={`w-8 h-8 shrink-0 rounded-full text-white transition-all ${isListening ? 'bg-red-500 animate-pulse' : isMimicMode ? 'bg-cyan-600 hover:bg-cyan-500' : 'bg-slate-700/50 hover:bg-slate-600/50'}`} 
-            title={isMimicMode ? 'Record and mimic' : 'Voice'}>
-            <span className="text-sm">{isListening ? '🛑' : isMimicMode ? '🗣️' : '🎙️'}</span>
+            title={isMimicMode ? 'Listen and repeat' : 'Voice'}>
+            <span className="text-sm">{isListening ? '🛑' : '🎙️'}</span>
           </button>
         </div>
       </div>

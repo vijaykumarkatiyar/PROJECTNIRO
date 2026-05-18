@@ -17,6 +17,123 @@ const LERP_SPEED = 2.5 // how fast the camera moves (higher = faster)
 // Left-drag on canvas → rotate avatar around Y (radians per screen pixel)
 const DRAG_YAW_SENSITIVITY = 0.005
 
+const LIGHTING_PRESETS = {
+  studio: {
+    ambientIntensity: 0.8,
+    ambientColor: '#ffffff',
+    keyPosition: [2, 2, 3],
+    keyIntensity: 2.5,
+    keyColor: '#ffffff',
+    fillPosition: [-2, 2, -3],
+    fillIntensity: 0.5,
+    fillColor: '#a8b1ff',
+    rimPosition: [-1.3, 1.15, 1.8],
+    rimIntensity: 0.45,
+    rimColor: '#f9a8d4',
+    environment: 'city',
+    shadowOpacity: 0.65,
+    shadowBlur: 2.8,
+    shadowScale: 4.4,
+    shadowFar: 2.4,
+    shadowRadius: 4,
+    exposure: 1.02,
+  },
+  warm: {
+    ambientIntensity: 0.7,
+    ambientColor: '#fff7ed',
+    keyPosition: [1.8, 2.2, 2.4],
+    keyIntensity: 2.85,
+    keyColor: '#fed7aa',
+    fillPosition: [-2.2, 1.4, -2.2],
+    fillIntensity: 0.34,
+    fillColor: '#f97316',
+    rimPosition: [-1.4, 1.1, 1.7],
+    rimIntensity: 0.72,
+    rimColor: '#facc15',
+    environment: 'sunset',
+    shadowOpacity: 0.54,
+    shadowBlur: 3.2,
+    shadowScale: 4.6,
+    shadowFar: 2.5,
+    shadowRadius: 5,
+    exposure: 1.08,
+  },
+  cool: {
+    ambientIntensity: 0.64,
+    ambientColor: '#e0f2fe',
+    keyPosition: [2.1, 2.1, 3],
+    keyIntensity: 2.35,
+    keyColor: '#bae6fd',
+    fillPosition: [-2.2, 1.8, -2.8],
+    fillIntensity: 0.62,
+    fillColor: '#67e8f9',
+    rimPosition: [-1.2, 1.25, 1.8],
+    rimIntensity: 0.88,
+    rimColor: '#a78bfa',
+    environment: 'dawn',
+    shadowOpacity: 0.72,
+    shadowBlur: 2.7,
+    shadowScale: 4.5,
+    shadowFar: 2.4,
+    shadowRadius: 4,
+    exposure: 1.0,
+  },
+  neon: {
+    ambientIntensity: 0.44,
+    ambientColor: '#cffafe',
+    keyPosition: [1.4, 1.8, 2.3],
+    keyIntensity: 1.9,
+    keyColor: '#22d3ee',
+    fillPosition: [-1.7, 1.7, -2],
+    fillIntensity: 1.15,
+    fillColor: '#f472b6',
+    rimPosition: [1.5, 1.15, -1.2],
+    rimIntensity: 1.35,
+    rimColor: '#a78bfa',
+    environment: 'night',
+    shadowOpacity: 0.82,
+    shadowBlur: 2.25,
+    shadowScale: 4.8,
+    shadowFar: 2.7,
+    shadowRadius: 3,
+    exposure: 1.12,
+  },
+  night: {
+    ambientIntensity: 0.34,
+    ambientColor: '#c7d2fe',
+    keyPosition: [1.6, 2.4, 2.7],
+    keyIntensity: 1.45,
+    keyColor: '#c4b5fd',
+    fillPosition: [-2, 1.2, -2.5],
+    fillIntensity: 0.26,
+    fillColor: '#38bdf8',
+    rimPosition: [-1.2, 1.25, 1.8],
+    rimIntensity: 0.95,
+    rimColor: '#818cf8',
+    environment: 'night',
+    shadowOpacity: 0.88,
+    shadowBlur: 2.1,
+    shadowScale: 4.9,
+    shadowFar: 2.8,
+    shadowRadius: 3,
+    exposure: 0.92,
+  },
+}
+
+function RendererShadowSettings({ exposure }) {
+  const { gl } = useThree()
+
+  useEffect(() => {
+    gl.shadowMap.enabled = true
+    gl.shadowMap.type = THREE.PCFSoftShadowMap
+    gl.toneMapping = THREE.ACESFilmicToneMapping
+    gl.toneMappingExposure = exposure
+    gl.outputColorSpace = THREE.SRGBColorSpace
+  }, [exposure, gl])
+
+  return null
+}
+
 function DragYaw({ yawRef, disabled }) {
   const { gl } = useThree()
   const dragging = useRef(false)
@@ -413,11 +530,12 @@ function SittingRoom3D({ onCollisionChange }) {
   )
 }
 
-export function AvatarCanvas({ action, bgMode = 'default', onDance, onAvatarLoaded, wordEventRef, visemeCurrentRef }) {
+export function AvatarCanvas({ action, bgMode = 'default', lightingMode = 'studio', onDance, onAvatarLoaded, wordEventRef, visemeCurrentRef }) {
   const controlsRef = useRef()
   const yawRef = useRef(0)
   const headPositionRef = useRef(new THREE.Vector3(0, 0.65, 0))
   const [collisionAlert, setCollisionAlert] = useState([])
+  const lighting = LIGHTING_PRESETS[lightingMode] || LIGHTING_PRESETS.studio
 
   const isSitting = bgMode === 'sitting_room'
   const avatarPos = isSitting
@@ -430,17 +548,45 @@ export function AvatarCanvas({ action, bgMode = 'default', onDance, onAvatarLoad
 
   return (
     <div className="absolute inset-0 z-0 cursor-grab active:cursor-grabbing select-none">
-      <Canvas shadows camera={{ position: [0, 0.65, 0.85], fov: 52, near: 0.01, far: 100 }} gl={{ alpha: true }}>
-        <ambientLight intensity={0.8} />
+      <Canvas
+        shadows="soft"
+        camera={{ position: [0, 0.65, 0.85], fov: 52, near: 0.01, far: 100 }}
+        gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
+      >
+        <RendererShadowSettings exposure={lighting.exposure} />
+        <ambientLight intensity={lighting.ambientIntensity} color={lighting.ambientColor} />
         <directionalLight
           castShadow
-          position={[2, 2, 3]}
-          intensity={2.5}
-          shadow-mapSize={[1024, 1024]}
-          shadow-bias={-0.0001}
+          position={lighting.keyPosition}
+          intensity={lighting.keyIntensity}
+          color={lighting.keyColor}
+          shadow-mapSize={[2048, 2048]}
+          shadow-camera-near={0.15}
+          shadow-camera-far={9}
+          shadow-camera-left={-3.5}
+          shadow-camera-right={3.5}
+          shadow-camera-top={3.5}
+          shadow-camera-bottom={-3.5}
+          shadow-bias={-0.00015}
+          shadow-normalBias={0.025}
+          shadow-radius={lighting.shadowRadius}
         />
-        <directionalLight position={[-2, 2, -3]} intensity={0.5} color="#a8b1ff" />
-        <Environment preset="city" />
+        <spotLight
+          castShadow
+          position={[lighting.keyPosition[0] * 0.7, lighting.keyPosition[1] + 0.8, lighting.keyPosition[2] * 0.7]}
+          intensity={lighting.keyIntensity * 0.45}
+          color={lighting.keyColor}
+          angle={0.52}
+          penumbra={0.68}
+          distance={6}
+          decay={1.35}
+          shadow-mapSize={[1024, 1024]}
+          shadow-bias={-0.00012}
+          shadow-normalBias={0.02}
+        />
+        <directionalLight position={lighting.fillPosition} intensity={lighting.fillIntensity} color={lighting.fillColor} />
+        <pointLight position={lighting.rimPosition} intensity={lighting.rimIntensity} color={lighting.rimColor} distance={4.5} />
+        <Environment key={lighting.environment} preset={lighting.environment} />
 
         <React.Suspense fallback={null}>
           <GirlAvatar
@@ -460,7 +606,15 @@ export function AvatarCanvas({ action, bgMode = 'default', onDance, onAvatarLoad
         {isSitting && <SittingRoom3D onCollisionChange={setCollisionAlert} />}
 
         {/* Ground shadow beneath the character */}
-        <ContactShadows position={[0, -0.58, 0]} opacity={0.65} scale={4} blur={2.5} far={2} />
+        <ContactShadows
+          position={[0, -0.58, 0]}
+          opacity={lighting.shadowOpacity}
+          scale={lighting.shadowScale}
+          blur={lighting.shadowBlur}
+          far={lighting.shadowFar}
+          resolution={1024}
+          color="#020617"
+        />
 
         <DragYaw yawRef={yawRef} disabled={isSitting} />
         <CameraController action={action} bgMode={bgMode} controlsRef={controlsRef} headPositionRef={headPositionRef} />
