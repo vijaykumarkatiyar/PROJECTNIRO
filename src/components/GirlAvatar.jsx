@@ -279,6 +279,47 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
   }, [action, danceAnim, mixer, bones])
 
   // Per-frame animation
+  // Touch tracking for mobile gestures
+  const touchRef = useRef({ x: 0, y: 0, active: false })
+  const touchNodRef = useRef(0)
+
+  useEffect(() => {
+    const handleTouchStart = (e) => {
+      if (e.touches && e.touches.length > 0) {
+        const touch = e.touches[0]
+        touchRef.current.x = (touch.clientX / window.innerWidth) * 2 - 1
+        touchRef.current.y = -(touch.clientY / window.innerHeight) * 2 + 1
+        touchRef.current.active = true
+        
+        // Trigger a gentle, warm nod and smile reaction
+        touchNodRef.current = 1.0
+      }
+    }
+
+    const handleTouchMove = (e) => {
+      if (e.touches && e.touches.length > 0) {
+        const touch = e.touches[0]
+        touchRef.current.x = (touch.clientX / window.innerWidth) * 2 - 1
+        touchRef.current.y = -(touch.clientY / window.innerHeight) * 2 + 1
+        touchRef.current.active = true
+      }
+    }
+
+    const handleTouchEnd = () => {
+      touchRef.current.active = false
+    }
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true })
+    window.addEventListener('touchmove', handleTouchMove, { passive: true })
+    window.addEventListener('touchend', handleTouchEnd, { passive: true })
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart)
+      window.removeEventListener('touchmove', handleTouchMove)
+      window.removeEventListener('touchend', handleTouchEnd)
+    }
+  }, [])
+
   useFrame((state, delta) => {
     const t = state.clock.getElapsedTime()
     if (!blinkMorphsRef.current) {
@@ -400,8 +441,23 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
 
     // Pointer Tracking (Mouse look) — disabled while talking
     const isTalking = action === 'talk'
-    const targetYaw = isTalking ? 0 : ((state.pointer.x * Math.PI) / 4 || 0)
-    const targetPitch = isTalking ? 0 : (-(state.pointer.y * Math.PI) / 6 || 0)
+    const pointerX = touchRef.current.active ? touchRef.current.x : state.pointer.x
+    const pointerY = touchRef.current.active ? touchRef.current.y : state.pointer.y
+
+    const targetYaw = isTalking ? 0 : ((pointerX * Math.PI) / 4 || 0)
+    const targetPitch = isTalking ? 0 : (-(pointerY * Math.PI) / 6 || 0)
+
+    // Decaying touch nod effect (smooth sine nod animation)
+    let nodOffset = 0
+    if (touchNodRef.current > 0) {
+      touchNodRef.current -= delta * 2.2 // decays over ~450ms
+      if (touchNodRef.current < 0) touchNodRef.current = 0
+      
+      // Dip head rotation down and up organically
+      nodOffset = Math.sin(touchNodRef.current * Math.PI) * 0.12
+    }
+
+
 
     // Detect transition out of dance and trigger reset blend
     if (prevActionRef.current === 'dance' && action !== 'dance') {
@@ -468,7 +524,7 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       }
       if (bHead) {
         bHead.rotation.y = safeLerp(bHead.rotation.y, bHead.userData.initRot.y + targetYaw * 0.6 + Math.sin(t * 0.5) * 0.05, 0.1)
-        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x + targetPitch * 0.6, 0.1)
+        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x + targetPitch * 0.6 + nodOffset, 0.1)
         bHead.rotation.z = bHead.userData.initRot.z
       }
       if (bLeftEye) {
@@ -499,7 +555,8 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
           m.mesh.morphTargetInfluences[m.index] *= 0.9
         }
       }
-      applyExpression(0, 0.08)
+      const touchSmile = Math.sin(touchNodRef.current * Math.PI) * 0.55
+      applyExpression(touchSmile, 0.08)
 
     } else if (action === 'talk') {
       // ── Precise Text-to-Viseme Lip Sync (TalkingHead Port) ──
