@@ -170,6 +170,9 @@ function App() {
   const [wallpaperUrl, setWallpaperUrl] = useState('https://images.unsplash.com/photo-1507842217343-583bb7270b66?q=80&w=1200')
   const [customWallpaper, setCustomWallpaper] = useState(null)
   const [showBgSelector, setShowBgSelector] = useState(false)
+  const [apiKeyInput, setApiKeyInput] = useState(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem("VITE_GEMINI_API_KEY") || "" : ""
+  })
 
   const COLOR_PRESETS = [
     '#0f172a', // Slate Default
@@ -1281,6 +1284,32 @@ function App() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Explicit API Key Settings Sub-Panel */}
+          <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/45 p-2 space-y-2 animate-slide-up">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block text-left">Explicit API Credentials</span>
+            <div className="flex gap-1.5">
+              <input
+                type="password"
+                placeholder="Paste Gemini API Key here..."
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                className="flex-1 bg-slate-950/70 border border-slate-800 rounded px-2.5 py-1 text-[11px] text-white focus:outline-none focus:border-purple-500 placeholder-slate-600"
+              />
+              <button
+                onClick={() => {
+                  localStorage.setItem("VITE_GEMINI_API_KEY", apiKeyInput.trim())
+                  alert("Gemini API Key Saved Successfully! 🚀")
+                }}
+                className="px-3 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded text-[11px] font-bold text-white transition-all hover:scale-[1.02] active:scale-95 shrink-0"
+              >
+                Save
+              </button>
+            </div>
+            <p className="text-[9px] text-slate-500 leading-normal text-left">
+              Stores the key securely in your browser to run the static site. You can also pass it in the link as <code className="text-purple-400 font-mono">?key=YOUR_KEY</code>.
+            </p>
           </div>
 
           {/* Solid Color Controller Sub-Panel */}

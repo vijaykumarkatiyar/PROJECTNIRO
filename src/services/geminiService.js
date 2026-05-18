@@ -23,9 +23,14 @@ export async function chatWithCompanion(message, history = [], language = 'hi') 
 
   // 2. Fall back to client-side direct Gemini API call (essential when deployed statically to a website host)
   try {
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""
+    // Resolve key from: 1. URL Parameter (?key=) | 2. LocalStorage | 3. Baked-in Env Fallback
+    const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+    const urlKey = urlParams ? urlParams.get("key") : null
+    const localKey = typeof window !== 'undefined' ? localStorage.getItem("VITE_GEMINI_API_KEY") : null
+    const apiKey = urlKey || localKey || import.meta.env.VITE_GEMINI_API_KEY || ""
+
     if (!apiKey) {
-      throw new Error("VITE_GEMINI_API_KEY is not configured in .env")
+      throw new Error("No Gemini API key found. Please provide via URL (?key=...), save in Settings, or configure in .env")
     }
 
     const genAI = new GoogleGenerativeAI(apiKey)
