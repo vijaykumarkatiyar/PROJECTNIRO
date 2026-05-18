@@ -59,7 +59,9 @@ export async function chatWithCompanion(message, history = [], language = 'hi') 
 
     const chat = model.startChat({
       history: formattedHistory,
-      systemInstruction: chatInstructions,
+      systemInstruction: {
+        parts: [{ text: chatInstructions }]
+      },
     })
 
     const result = await chat.sendMessage(message)
