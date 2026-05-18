@@ -521,14 +521,14 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       const currentMorphName = VISEME_TO_MORPH[visemeState.viseme]
       if (currentMorphName) {
         const matchingMorph = mouthMorphs?.find(m => m.name.toLowerCase().includes(currentMorphName))
-        if (matchingMorph) targetWeights[matchingMorph.name] = (1.0 - visemeState.phase) * 0.8
+        if (matchingMorph) targetWeights[matchingMorph.name] = (1.0 - visemeState.phase) * 0.55
       }
 
       // Add weight for next viseme (increasing as phase goes 0 -> 1)
       const nextMorphName = VISEME_TO_MORPH[visemeState.nextViseme]
       if (nextMorphName && visemeState.nextViseme !== visemeState.viseme) {
         const matchingMorph = mouthMorphs?.find(m => m.name.toLowerCase().includes(nextMorphName))
-        if (matchingMorph) targetWeights[matchingMorph.name] = (visemeState.phase) * 0.8
+        if (matchingMorph) targetWeights[matchingMorph.name] = (visemeState.phase) * 0.55
       }
 
       // Special handling for jaw
@@ -559,16 +559,14 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
           m.mesh.morphTargetInfluences[m.index] = current + (target - current) * 0.45
         }
       }
-      applyExpression(isSpeaking ? 1 : 0.35, 0.12)
+      applyExpression(isSpeaking ? 0.6 : 0.35, 0.12)
 
       if (bJaw) {
-        bJaw.rotation.x = safeLerp(bJaw.rotation.x, Math.max(0, jawTarget), 0.35)
+        bJaw.rotation.x = safeLerp(bJaw.rotation.x, Math.max(0, jawTarget * 0.1), 0.35)
         bJaw.rotation.z = safeLerp(bJaw.rotation.z, 0, 0.1)
       }
 
       const mouthProxy = isSpeaking ? 0.1 : 0
-
-      // Subtle body movement while talking — no cursor tracking
       if (bSpine) {
         bSpine.rotation.z = safeLerp(bSpine.rotation.z, bSpine.userData.initRot.z + Math.sin(t * 0.8) * 0.01, 0.06)
         bSpine.rotation.x = safeLerp(bSpine.rotation.x, bSpine.userData.initRot.x + Math.sin(t * 0.5) * 0.005 + mouthProxy * 0.25, 0.06)

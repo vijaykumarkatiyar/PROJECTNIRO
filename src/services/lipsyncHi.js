@@ -237,7 +237,6 @@ export function textToVisemeTimelineHindi(text, durationMs) {
     } else {
       // English/Latin word mixed in! Import english parser rules
       // Note: We need the local relative structure, so we mock english wordsToVisemes
-      const LipsyncEn = require('./lipsyncEn').LipsyncEn // wait, import is ES module so we use englishTimeline or import a helper
       // Let's call a simplified mapping or use englishTimeline relative scale
       result = mockEnglishWordVisemes(word)
     }
