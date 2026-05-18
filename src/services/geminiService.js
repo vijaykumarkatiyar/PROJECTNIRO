@@ -42,10 +42,20 @@ export async function chatWithCompanion(message, history = [], language = 'hi') 
       : 'You are a friendly AI teacher companion. Always respond in natural Hindi, using Devanagari script. Keep answers warm, educational, and concise in 1-3 sentences unless the user asks for detail.'
 
     // Map message history to Gemini format (user -> model)
-    const formattedHistory = history.map(item => ({
-      role: item.role === 'user' ? 'user' : 'model',
-      parts: [{ text: String(item.text || '') }],
-    }))
+    // Note: Gemini's startChat API requires the first history message to be from the 'user'
+    const formattedHistory = []
+    let hasSeenUser = false
+    for (const item of history) {
+      if (item.role === 'user') {
+        hasSeenUser = true
+      }
+      if (hasSeenUser) {
+        formattedHistory.push({
+          role: item.role === 'user' ? 'user' : 'model',
+          parts: [{ text: String(item.text || '') }],
+        })
+      }
+    }
 
     const chat = model.startChat({
       history: formattedHistory,
