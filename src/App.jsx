@@ -2,25 +2,44 @@ import { useState, useRef, useEffect, useCallback, Suspense } from 'react'
 import { AvatarCanvas } from './components/AvatarCanvas'
 import { ButterflyCursor } from './components/ButterflyCursor'
 import { chatWithCompanion } from './services/geminiService'
-import { textToVisemeTimeline } from './services/lipsyncEn'
-import { textToVisemeTimelineHindi } from './services/lipsyncHi'
+import { createVisemeTimeline, getVisemeStateAt, SILENCE_VISEME_STATE } from './services/lipsync'
 import './App.css'
 
 const HINDI_LANG = 'hi-IN'
 const ENGLISH_LANG = 'en-US'
+const API_KEY_STORAGE_KEY = 'COMPANION_API_KEY'
+const LEGACY_GEMINI_KEY_STORAGE_KEY = 'VITE_GEMINI_API_KEY'
+const SPEECH_ENDPOINTS = [
+  `${import.meta.env.BASE_URL}api/speech`,
+  `${import.meta.env.BASE_URL}api/speech.php`,
+]
+
+function isOpenAiApiKey(apiKey = '') {
+  return /^sk-[A-Za-z0-9_-]+/.test(String(apiKey).trim())
+}
+
+function getStoredOpenAiApiKey() {
+  if (typeof window === 'undefined') return ''
+
+  try {
+    const primaryKey = localStorage.getItem(API_KEY_STORAGE_KEY) || ''
+    if (isOpenAiApiKey(primaryKey)) return primaryKey.trim()
+
+    const legacyKey = localStorage.getItem(LEGACY_GEMINI_KEY_STORAGE_KEY) || ''
+    return isOpenAiApiKey(legacyKey) ? legacyKey.trim() : ''
+  } catch {
+    return ''
+  }
+}
 
 const LANGUAGE_COPY = {
   hi: {
     code: 'हिं',
     label: 'Hindi',
     locale: HINDI_LANG,
-    greeting: 'नमस्ते! मैं आपकी AI शिक्षिका हूं। आप मुझसे कुछ भी पूछ सकते हैं।',
     placeholder: 'कुछ बोलिए...',
     micRetry: 'मुझे आवाज़ साफ़ नहीं सुनाई दी। कृपया फिर से बोलिए।',
     micError: 'माइक से आवाज़ पढ़ने में दिक्कत आ रही है। कृपया फिर कोशिश करें।',
-    micUnavailable: 'इस ब्राउज़र में माइक उपलब्ध नहीं है। Mimic mode में लिखकर Send दबाएं, मैं वही बोलकर दोहराऊंगी।',
-    mimicPlaceholder: 'माइक दबाकर बोलिए...',
-    mimicListening: 'सुन रही हूं...',
     sendButton: 'Send',
     readButton: 'टेक्स्ट पढ़ें',
   },
@@ -28,16 +47,49 @@ const LANGUAGE_COPY = {
     code: 'EN',
     label: 'English',
     locale: ENGLISH_LANG,
-    greeting: 'Hello! I am your AI teacher. You can ask me anything.',
     placeholder: 'Say something...',
     micRetry: 'I could not hear that clearly. Please try speaking again.',
     micError: 'I had trouble reading the microphone audio. Please try again.',
-    micUnavailable: 'This browser cannot access the microphone. In Mimic mode, type and press Send, and I will repeat it.',
-    mimicPlaceholder: 'Press mic and speak...',
-    mimicListening: 'Listening...',
     sendButton: 'Send',
     readButton: 'Read Text',
   },
+}
+
+const AVATAR_LANGUAGE_COPY = {
+  female: {
+    hi: {
+      greeting: 'नमस्ते! मैं आपकी AI शिक्षिका हूं। आप मुझसे कुछ भी पूछ सकते हैं।',
+      micUnavailable: 'इस ब्राउज़र में माइक उपलब्ध नहीं है। Mimic mode में लिखकर Send दबाएं, मैं वही बोलकर दोहराऊंगी।',
+      mimicPlaceholder: 'माइक दबाकर बोलिए...',
+      mimicListening: 'सुन रही हूं...',
+    },
+    en: {
+      greeting: 'Hello! I am your female AI teacher. You can ask me anything.',
+      micUnavailable: 'This browser cannot access the microphone. In Mimic mode, type and press Send, and I will repeat it in my female voice.',
+      mimicPlaceholder: 'Press mic and speak...',
+      mimicListening: 'Listening...',
+    },
+  },
+  male: {
+    hi: {
+      greeting: 'नमस्ते! मैं आपका AI शिक्षक हूं। आप मुझसे कुछ भी पूछ सकते हैं।',
+      micUnavailable: 'इस ब्राउज़र में माइक उपलब्ध नहीं है। Mimic mode में लिखकर Send दबाएं, मैं वही बोलकर दोहराऊंगा।',
+      mimicPlaceholder: 'माइक दबाकर बोलिए...',
+      mimicListening: 'सुन रहा हूं...',
+    },
+    en: {
+      greeting: 'Hello! I am your male AI teacher. You can ask me anything.',
+      micUnavailable: 'This browser cannot access the microphone. In Mimic mode, type and press Send, and I will repeat it in my male voice.',
+      mimicPlaceholder: 'Press mic and speak...',
+      mimicListening: 'Listening...',
+    },
+  },
+}
+
+function getLanguageCopy(languageMode = 'hi', avatarMode = 'female') {
+  const languageCopy = LANGUAGE_COPY[languageMode] || LANGUAGE_COPY.hi
+  const avatarCopy = AVATAR_LANGUAGE_COPY[avatarMode]?.[languageMode] || AVATAR_LANGUAGE_COPY.female[languageMode]
+  return { ...languageCopy, ...avatarCopy }
 }
 
 const MARQUEE_WORDS = [
@@ -81,6 +133,49 @@ function detectTextLanguage(text, fallback = 'hi') {
   return devanagariCount >= Math.max(2, latinCount * 0.35) ? 'hi' : 'en'
 }
 
+function stabilizeVisemeTimeline(timeline, durationMs, avatarMode = 'female') {
+  if (!timeline?.visemes?.length) return timeline
+
+  const minDuration = avatarMode === 'male' ? 105 : 90
+  const segments = timeline.visemes.map((viseme, index) => ({
+    viseme,
+    duration: Math.max(0, Number(timeline.durations[index]) || 0),
+  }))
+
+  const stable = []
+  for (const segment of segments) {
+    if (!segment.viseme || segment.duration <= 0) continue
+
+    const previous = stable[stable.length - 1]
+    if (previous?.viseme === segment.viseme) {
+      previous.duration += segment.duration
+      continue
+    }
+
+    if (segment.duration < minDuration && previous) {
+      previous.duration += segment.duration
+      continue
+    }
+
+    stable.push({ ...segment })
+  }
+
+  if (!stable.length) return timeline
+
+  const total = stable.reduce((sum, segment) => sum + segment.duration, 0)
+  const scale = total > 0 && durationMs > 0 ? durationMs / total : 1
+  let time = 0
+
+  return stable.reduce((result, segment) => {
+    const scaledDuration = segment.duration * scale
+    result.visemes.push(segment.viseme)
+    result.times.push(time)
+    result.durations.push(scaledDuration)
+    time += scaledDuration
+    return result
+  }, { visemes: [], times: [], durations: [] })
+}
+
 function prepareReadableText(text) {
   return text
     .replace(/\s+/g, ' ')
@@ -96,32 +191,62 @@ function estimateReadDurationMs(text) {
   return Math.max(1800, Math.min(24000, compactLength * 92 + wordCount * 340 + punctuationPauses + 900))
 }
 
-function pickPreferredVoice(languageMode = 'hi') {
+const VOICE_HINTS = {
+  female: {
+    hi: ['kalpana', 'heera', 'swara', 'female', 'woman', 'girl'],
+    en: ['zira', 'jenny', 'aria', 'samantha', 'susan', 'victoria', 'female', 'woman'],
+  },
+  male: {
+    hi: ['hemant', 'ravi', 'rishi', 'male', 'man', 'boy'],
+    en: ['david', 'mark', 'guy', 'ryan', 'george', 'male', 'man', 'boy'],
+  },
+}
+
+const VOICE_GENDER_EXCLUDES = {
+  female: ['male', 'man', 'boy', 'david', 'mark', 'guy', 'ryan', 'george', 'hemant', 'ravi', 'rishi'],
+  male: ['female', 'woman', 'girl', 'zira', 'jenny', 'aria', 'samantha', 'susan', 'victoria', 'kalpana', 'heera', 'swara'],
+}
+
+function pickPreferredVoice(languageMode = 'hi', avatarMode = 'female') {
   if (!('speechSynthesis' in window)) return null
   const voices = window.speechSynthesis.getVoices()
-  const voiceNameIncludes = (voice, words) => {
-    const name = voice.name.toLowerCase()
-    return words.some((word) => name.includes(word))
-  }
   const locale = LANGUAGE_COPY[languageMode]?.locale || HINDI_LANG
+  const preferredHints = VOICE_HINTS[avatarMode]?.[languageMode] || []
+  const oppositeHints = VOICE_HINTS[avatarMode === 'male' ? 'female' : 'male']?.[languageMode] || []
+  const blockedHints = VOICE_GENDER_EXCLUDES[avatarMode] || []
 
-  if (languageMode === 'en') {
-    return (
-      voices.find((v) => v.lang === locale && v.name.includes('Google')) ||
-      voices.find((v) => v.lang === locale) ||
-      voices.find((v) => v.lang.toLowerCase().startsWith('en')) ||
-      voices.find((v) => voiceNameIncludes(v, ['english', 'zira', 'jenny', 'aria', 'samantha'])) ||
-      null
-    )
+  const voiceScore = (voice) => {
+    const name = voice.name.toLowerCase()
+    const lang = voice.lang.toLowerCase()
+    const localeLower = locale.toLowerCase()
+    let score = 0
+
+    if (lang === localeLower) score += 100
+    else if (lang.startsWith(languageMode)) score += 70
+    else if (languageMode === 'hi' && (lang.startsWith('hi') || lang.includes('in'))) score += 45
+
+    if (name.includes('google')) score += 8
+    if (preferredHints.some((word) => name.includes(word))) score += 52
+    if (oppositeHints.some((word) => name.includes(word))) score -= 42
+    if (blockedHints.some((word) => name.includes(word))) score -= 120
+
+    return score
   }
 
-  return (
-    voices.find((v) => v.lang === HINDI_LANG && v.name.includes('Google')) ||
-    voices.find((v) => v.lang === HINDI_LANG) ||
-    voices.find((v) => v.lang.toLowerCase().startsWith('hi')) ||
-    voices.find((v) => voiceNameIncludes(v, ['hindi', 'हिन्दी', 'हिंदी', 'kalpana', 'hemant', 'swara'])) ||
-    null
-  )
+  const bestVoice = voices
+    .map((voice) => ({ voice, score: voiceScore(voice) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)[0]?.voice || null
+
+  if (bestVoice || avatarMode !== 'male') return bestVoice
+
+  const anyMaleVoice = voices.find((voice) => {
+    const name = voice.name.toLowerCase()
+    return VOICE_HINTS.male.en.concat(VOICE_HINTS.male.hi).some((word) => name.includes(word)) &&
+      !VOICE_GENDER_EXCLUDES.male.some((word) => name.includes(word))
+  })
+
+  return anyMaleVoice || null
 }
 
 function App() {
@@ -133,6 +258,7 @@ function App() {
   const [languageMode, setLanguageMode] = useState('hi')
   const [cursorMode, setCursorMode] = useState('butterfly')
   const [lightingMode, setLightingMode] = useState('studio')
+  const [avatarMode, setAvatarMode] = useState('female')
   const [avatarLoaded, setAvatarLoaded] = useState(false)
   const [userInteracted, setUserInteracted] = useState(false)
   const chatEndRef = useRef(null)
@@ -149,15 +275,21 @@ function App() {
   const recordingStartedAtRef = useRef(0)
   const voiceStartedAtRef = useRef(0)
   const lastVoiceAtRef = useRef(0)
+  const pendingStarterGreetingRef = useRef(null)
+  const greetingSpeakTimerRef = useRef(null)
   const mimicFlushTimerRef = useRef(null)
   const mimicRestartTimerRef = useRef(null)
   const mimicAutoRestartRef = useRef(false)
   const mimicRateRef = useRef(0.92)
   const silenceMonitorRef = useRef(null)
   const audioContextRef = useRef(null)
-  const wordEventRef = useRef(0) // kept for fallback timing
+  const speechAudioContextRef = useRef(null)
+  const speechAudioSourceRef = useRef(null)
+  const speechAnalyserRef = useRef(null)
+  const speechAnalyserDataRef = useRef(null)
+  const speechEnergyRef = useRef(0)
   const visemeTimelineRef = useRef(null)
-  const visemeCurrentRef = useRef({ viseme: 'sil', nextViseme: 'sil', phase: 0 })
+  const visemeCurrentRef = useRef(SILENCE_VISEME_STATE)
   const visemeRafRef = useRef(null)
   const butterflyCursorRef = useRef(null)
   const butterflyIdleTimerRef = useRef(null)
@@ -171,7 +303,9 @@ function App() {
   const [customWallpaper, setCustomWallpaper] = useState(null)
   const [showBgSelector, setShowBgSelector] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState(() => {
-    return typeof window !== 'undefined' ? localStorage.getItem("VITE_GEMINI_API_KEY") || "" : ""
+    return typeof window !== 'undefined'
+      ? localStorage.getItem(API_KEY_STORAGE_KEY) || localStorage.getItem(LEGACY_GEMINI_KEY_STORAGE_KEY) || ""
+      : ""
   })
 
   const COLOR_PRESETS = [
@@ -190,7 +324,7 @@ function App() {
     { name: 'Cyber Sci-Fi', url: 'https://images.unsplash.com/photo-1508739773434-c26b3d09e071?q=80&w=1200' }
   ]
 
-  const activeLanguage = LANGUAGE_COPY[languageMode] || LANGUAGE_COPY.hi
+  const activeLanguage = getLanguageCopy(languageMode, avatarMode)
 
   // User must click once to unlock browser audio
   const handleStartClick = () => {
@@ -204,9 +338,55 @@ function App() {
     }
   }
 
-  const onAvatarLoaded = useCallback(() => {
-    setAvatarLoaded(true)
+  const onAvatarLoaded = useCallback((loadedAvatarMode = avatarMode) => {
+    if (loadedAvatarMode === avatarMode) setAvatarLoaded(true)
+  }, [avatarMode])
+
+  const cleanupSpeechAnalyser = useCallback(() => {
+    try {
+      speechAudioSourceRef.current?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    try {
+      speechAnalyserRef.current?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    speechAudioSourceRef.current = null
+    speechAnalyserRef.current = null
+    speechAnalyserDataRef.current = null
+    speechEnergyRef.current = 0
   }, [])
+
+  const clearGreetingSpeakTimer = useCallback(() => {
+    if (!greetingSpeakTimerRef.current) return
+    window.clearTimeout(greetingSpeakTimerRef.current)
+    greetingSpeakTimerRef.current = null
+  }, [])
+
+  const stopActiveSpeech = useCallback(() => {
+    speakGenRef.current += 1
+    clearGreetingSpeakTimer()
+    cleanupSpeechAnalyser()
+    if (visemeRafRef.current) {
+      cancelAnimationFrame(visemeRafRef.current)
+      visemeRafRef.current = null
+    }
+    if (speechAudioRef.current) {
+      speechAudioRef.current.pause()
+      speechAudioRef.current = null
+    }
+    if (speechAudioUrlRef.current) {
+      URL.revokeObjectURL(speechAudioUrlRef.current)
+      speechAudioUrlRef.current = null
+    }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+    activeUtteranceRef.current = null
+    visemeTimelineRef.current = null
+    visemeCurrentRef.current = SILENCE_VISEME_STATE
+    setAvatarAction('idle')
+  }, [cleanupSpeechAnalyser, clearGreetingSpeakTimer])
 
   const perchButterflyCursor = useCallback(() => {
     if (cursorMode !== 'butterfly') return
@@ -304,11 +484,13 @@ function App() {
   const speak = useCallback((text, isDancing, speechOptions = {}) => {
     const gen = ++speakGenRef.current
     const speechStyle = speechOptions.style || 'teacher'
-    const speechLanguage = speechOptions.language || languageMode
+    const speechLanguage = speechOptions.language || detectTextLanguage(text, languageMode)
+    const speechAvatarMode = speechOptions.avatarMode || avatarMode
     const speechLocale = LANGUAGE_COPY[speechLanguage]?.locale || HINDI_LANG
     const targetDurationMs = Number(speechOptions.targetDurationMs || 0)
     const requestedMimicRate = Number(speechOptions.mimicRate || 0)
     const onSpeechComplete = typeof speechOptions.onComplete === 'function' ? speechOptions.onComplete : null
+    const speechApiKey = getStoredOpenAiApiKey()
     const { naturalDurationMs: mimicNaturalDuration } = getMimicSpeechStats(text)
     const isMimicSpeech = speechStyle === 'mimic'
     const isReadSpeech = speechStyle === 'read'
@@ -320,7 +502,9 @@ function App() {
           : 0.88
       : 0.92
     const browserSpeechRate = isMimicSpeech ? mimicSpeechRate : isReadSpeech ? 0.88 : 0.92
-    const browserSpeechPitch = isMimicSpeech ? 1.08 : isReadSpeech ? 1.02 : 1.05
+    const femalePitch = isMimicSpeech ? 1.1 : isReadSpeech ? 1.03 : 1.06
+    const malePitch = isMimicSpeech ? 0.5 : isReadSpeech ? 0.56 : 0.58
+    const browserSpeechPitch = speechAvatarMode === 'male' ? malePitch : femalePitch
     let estimatedDuration = Math.max(3500, text.length * 85)
     if (isMimicSpeech) {
       estimatedDuration = Math.max(1400, Math.min(17000, mimicNaturalDuration / Math.max(0.68, mimicSpeechRate) + 700))
@@ -341,6 +525,13 @@ function App() {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel()
     }
+    cleanupSpeechAnalyser()
+    if (visemeRafRef.current) {
+      cancelAnimationFrame(visemeRafRef.current)
+      visemeRafRef.current = null
+    }
+    visemeTimelineRef.current = null
+    visemeCurrentRef.current = SILENCE_VISEME_STATE
 
     const startTalkIfCurrent = () => {
       if (!isDancing && speakGenRef.current === gen) setAvatarAction('talk')
@@ -352,13 +543,79 @@ function App() {
     let speechTimeout = null
     let speechStartTime = 0
     let hasFinishedSpeech = false
+    let activeTimelineDurationMs = 0
 
-    // Generate the exact viseme timeline for the spoken text based on language
-    if (speechLanguage === 'hi') {
-      visemeTimelineRef.current = textToVisemeTimelineHindi(text, estimatedDuration)
-    } else {
-      visemeTimelineRef.current = textToVisemeTimeline(text, estimatedDuration)
+    const getSafeSpeechDuration = (durationMs) => {
+      const duration = Number(durationMs)
+      return Number.isFinite(duration) && duration > 0
+        ? Math.max(700, Math.min(32000, duration))
+        : estimatedDuration
     }
+
+    const syncVisemeTimeline = (durationMs, force = false) => {
+      const safeDuration = getSafeSpeechDuration(durationMs)
+      if (!force && Math.abs(safeDuration - activeTimelineDurationMs) < 180) return
+      activeTimelineDurationMs = safeDuration
+      const rawTimeline = createVisemeTimeline(text, safeDuration, speechLanguage)
+      visemeTimelineRef.current = stabilizeVisemeTimeline(rawTimeline, safeDuration, speechAvatarMode)
+    }
+
+    const getAudioDurationMs = (audio) =>
+      audio && Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration * 1000
+        : 0
+
+    const setupSpeechAnalyser = (audio) => {
+      cleanupSpeechAnalyser()
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext
+        if (!AudioContextClass) return false
+
+        const audioContext = speechAudioContextRef.current || new AudioContextClass()
+        speechAudioContextRef.current = audioContext
+        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {})
+
+        const source = audioContext.createMediaElementSource(audio)
+        const analyser = audioContext.createAnalyser()
+        analyser.fftSize = 512
+        analyser.smoothingTimeConstant = 0.58
+        source.connect(analyser)
+        analyser.connect(audioContext.destination)
+
+        speechAudioSourceRef.current = source
+        speechAnalyserRef.current = analyser
+        speechAnalyserDataRef.current = new Uint8Array(analyser.fftSize)
+        speechEnergyRef.current = 0
+        return true
+      } catch (error) {
+        console.warn('Speech analyser unavailable:', error)
+        cleanupSpeechAnalyser()
+        return false
+      }
+    }
+
+    const getSpeechEnergy = () => {
+      const analyser = speechAnalyserRef.current
+      const samples = speechAnalyserDataRef.current
+      if (!analyser || !samples) return null
+
+      analyser.getByteTimeDomainData(samples)
+      let sumSquares = 0
+      for (let i = 0; i < samples.length; i += 1) {
+        const centered = (samples[i] - 128) / 128
+        sumSquares += centered * centered
+      }
+
+      const rms = Math.sqrt(sumSquares / samples.length)
+      const rawEnergy = clampNumber((rms - 0.012) * 8.5, 0, 1)
+      const previous = speechEnergyRef.current || 0
+      const speed = rawEnergy > previous ? 0.58 : 0.24
+      const energy = previous + (rawEnergy - previous) * speed
+      speechEnergyRef.current = energy
+      return energy
+    }
+
+    syncVisemeTimeline(estimatedDuration, true)
     
     const updateVisemeLoop = () => {
       if (speakGenRef.current !== gen) return
@@ -378,46 +635,30 @@ function App() {
         }
       }
 
-      const timeline = visemeTimelineRef.current
-      if (timeline && timeline.times.length > 0) {
-        // Find current viseme in timeline
-        let idx = 0
-        for (let i = 0; i < timeline.times.length; i++) {
-          if (elapsedMs >= timeline.times[i]) idx = i
-          else break
-        }
-        
-        const currentViseme = timeline.visemes[idx]
-        const currentStart = timeline.times[idx]
-        const currentDuration = timeline.durations[idx]
-        
-        // Find next viseme for smooth interpolation
-        const nextIdx = Math.min(idx + 1, timeline.visemes.length - 1)
-        const nextViseme = timeline.visemes[nextIdx]
-        
-        // Phase goes from 0.0 to 1.0 within the current viseme's duration
-        const phase = Math.min(1.0, Math.max(0.0, (elapsedMs - currentStart) / currentDuration))
-        
-        visemeCurrentRef.current = {
-          viseme: currentViseme,
-          nextViseme: nextViseme,
-          phase: phase
-        }
-      } else {
-        visemeCurrentRef.current = { viseme: 'sil', nextViseme: 'sil', phase: 0 }
+      const visemeState = getVisemeStateAt(visemeTimelineRef.current, elapsedMs)
+      const speechEnergy = getSpeechEnergy()
+      visemeCurrentRef.current = {
+        ...visemeState,
+        energy: speechEnergy == null ? 1 : speechEnergy,
       }
 
       visemeRafRef.current = requestAnimationFrame(updateVisemeLoop)
     }
 
     const startPulse = () => {
-      if (speakGenRef.current !== gen) return
+      if (hasFinishedSpeech || speakGenRef.current !== gen) return
+      const audioDurationMs = getAudioDurationMs(speechAudioRef.current)
+      if (audioDurationMs > 0) syncVisemeTimeline(audioDurationMs, true)
       startTalkIfCurrent()
       speechStartTime = performance.now()
-      wordEventRef.current = speechStartTime
       
       if (visemeRafRef.current) cancelAnimationFrame(visemeRafRef.current)
       visemeRafRef.current = requestAnimationFrame(updateVisemeLoop)
+    }
+
+    const armSpeechTimer = (durationMs) => {
+      if (speechTimeout) window.clearTimeout(speechTimeout)
+      speechTimeout = window.setTimeout(finishSpeech, durationMs)
     }
 
     const stopPulse = () => {
@@ -436,9 +677,10 @@ function App() {
       if (hasFinishedSpeech) return
       hasFinishedSpeech = true
       stopPulse()
-      visemeCurrentRef.current = { viseme: 'sil', nextViseme: 'sil', phase: 0 }
-      wordEventRef.current = 0
+      cleanupSpeechAnalyser()
+      visemeCurrentRef.current = SILENCE_VISEME_STATE
       endTalkIfCurrent()
+      activeUtteranceRef.current = null
       if (speechAudioRef.current) speechAudioRef.current = null
       if (speechAudioUrlRef.current) {
         URL.revokeObjectURL(speechAudioUrlRef.current)
@@ -452,10 +694,28 @@ function App() {
     }
 
     const playBrowserSpeechFallback = () => {
-      if (speakGenRef.current !== gen) return
+      if (hasFinishedSpeech || speakGenRef.current !== gen) return
+      cleanupSpeechAnalyser()
+      if (speechAudioRef.current) {
+        speechAudioRef.current.pause?.()
+        speechAudioRef.current = null
+      }
+      if (speechAudioUrlRef.current) {
+        URL.revokeObjectURL(speechAudioUrlRef.current)
+        speechAudioUrlRef.current = null
+      }
+
+      let browserSpeechStarted = false
+      const ensureBrowserPulse = (extraMs = 900) => {
+        if (!browserSpeechStarted) {
+          browserSpeechStarted = true
+          startPulse()
+        }
+        armSpeechTimer(estimatedDuration + extraMs)
+      }
+
       if (!('speechSynthesis' in window)) {
-        startPulse()
-        speechTimeout = window.setTimeout(finishSpeech, estimatedDuration)
+        ensureBrowserPulse(1200)
         return
       }
 
@@ -465,15 +725,24 @@ function App() {
       utterance.rate = browserSpeechRate
       utterance.pitch = browserSpeechPitch
       utterance.volume = 1
-      utterance.onstart = startPulse
+      utterance.onstart = () => {
+        browserSpeechStarted = true
+        startPulse()
+        armSpeechTimer(estimatedDuration + 1800)
+      }
       utterance.onboundary = (event) => {
+        if (hasFinishedSpeech || speakGenRef.current !== gen) return
         if (event.name === 'word') {
-          wordEventRef.current = performance.now()
-          
           // Re-align our timeline clock with the actual speech elapsed time!
           if (event.elapsedTime !== undefined) {
             const actualElapsedMs = event.elapsedTime * 1000
             speechStartTime = performance.now() - actualElapsedMs
+            if (typeof event.charIndex === 'number' && event.charIndex > 1 && text.length > 3) {
+              const textProgress = Math.min(0.96, event.charIndex / text.length)
+              if (textProgress > 0.08) {
+                syncVisemeTimeline((actualElapsedMs / textProgress) + 350)
+              }
+            }
           }
         }
       }
@@ -481,20 +750,36 @@ function App() {
         activeUtteranceRef.current = null
         finishSpeech()
       }
-      utterance.onerror = () => {
+      utterance.onerror = (event) => {
         activeUtteranceRef.current = null
-        finishSpeech()
+        if (hasFinishedSpeech || speakGenRef.current !== gen) return
+        console.warn('Browser speech synthesis error:', event?.error || 'unknown')
+        // Keep the text-driven mouth animation alive even when the browser
+        // voice engine rejects a Hindi/English utterance.
+        ensureBrowserPulse(900)
       }
 
       const applyVoiceAndSpeak = () => {
+        if (hasFinishedSpeech || speakGenRef.current !== gen) return
         try {
           window.speechSynthesis.resume()
         } catch {
           /* ignore */
         }
-        const voice = pickPreferredVoice(speechLanguage)
+        const voice = pickPreferredVoice(speechLanguage, speechAvatarMode)
         if (voice) utterance.voice = voice
-        window.speechSynthesis.speak(utterance)
+        try {
+          window.speechSynthesis.speak(utterance)
+          const fallbackStartDelay = speechAvatarMode === 'male' ? 180 : 700
+          window.setTimeout(() => {
+            if (!browserSpeechStarted && !hasFinishedSpeech && speakGenRef.current === gen) {
+              ensureBrowserPulse(900)
+            }
+          }, fallbackStartDelay)
+        } catch (error) {
+          console.warn('Browser speech synthesis failed:', error)
+          ensureBrowserPulse(900)
+        }
       }
 
       const voices = window.speechSynthesis.getVoices()
@@ -504,7 +789,7 @@ function App() {
         let started = false
         const onVoices = () => startOnce()
         const startOnce = () => {
-          if (started) return
+          if (started || hasFinishedSpeech || speakGenRef.current !== gen) return
           started = true
           window.speechSynthesis.removeEventListener('voiceschanged', onVoices)
           window.setTimeout(applyVoiceAndSpeak, 0)
@@ -512,37 +797,78 @@ function App() {
         window.speechSynthesis.addEventListener('voiceschanged', onVoices)
         window.setTimeout(startOnce, 500)
       }
-
-      window.setTimeout(startPulse, 300)
-      speechTimeout = window.setTimeout(finishSpeech, estimatedDuration + 3000)
     }
 
     const playOpenAiSpeech = async () => {
       try {
-        const response = await fetch(`${import.meta.env.BASE_URL}api/speech`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ text, style: speechStyle, targetDurationMs, language: speechLanguage }),
-        })
-        if (!response.ok) throw new Error('OpenAI speech request failed')
+        const payload = {
+          text,
+          style: speechStyle,
+          targetDurationMs,
+          language: speechLanguage,
+          avatarMode: speechAvatarMode,
+        }
+        if (speechApiKey) payload.apiKey = speechApiKey
 
-        const blob = await response.blob()
+        let blob = null
+        let lastSpeechError = null
+        for (const endpoint of SPEECH_ENDPOINTS) {
+          try {
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(payload),
+            })
+            const contentType = response.headers.get('content-type') || ''
+            if (!response.ok || !contentType.toLowerCase().includes('audio/')) {
+              const errorText = await response.text().catch(() => '')
+              throw new Error(errorText || `Speech endpoint failed: ${endpoint}`)
+            }
+            blob = await response.blob()
+            break
+          } catch (endpointError) {
+            lastSpeechError = endpointError
+          }
+        }
+
+        if (!blob) throw lastSpeechError || new Error('OpenAI speech request failed')
         if (speakGenRef.current !== gen) return
 
         const audioUrl = URL.createObjectURL(blob)
         const audio = new Audio(audioUrl)
+        setupSpeechAnalyser(audio)
         speechAudioRef.current = audio
         speechAudioUrlRef.current = audioUrl
 
-        audio.onplaying = startPulse
+        audio.onloadedmetadata = () => {
+          const audioDurationMs = getAudioDurationMs(audio)
+          if (audioDurationMs > 0) syncVisemeTimeline(audioDurationMs, true)
+        }
+        audio.onplaying = () => {
+          const audioDurationMs = getAudioDurationMs(audio)
+          if (audioDurationMs > 0) {
+            syncVisemeTimeline(audioDurationMs, true)
+            armSpeechTimer(audioDurationMs + 2000)
+          }
+          startPulse()
+        }
         audio.onended = finishSpeech
         audio.onerror = () => {
-          finishSpeech()
+          if (hasFinishedSpeech || speakGenRef.current !== gen) return
+          if (speechTimeout) {
+            window.clearTimeout(speechTimeout)
+            speechTimeout = null
+          }
+          speechAudioRef.current = null
+          if (speechAudioUrlRef.current) {
+            URL.revokeObjectURL(speechAudioUrlRef.current)
+            speechAudioUrlRef.current = null
+          }
           playBrowserSpeechFallback()
         }
-        speechTimeout = window.setTimeout(finishSpeech, estimatedDuration + 15000)
+        armSpeechTimer(estimatedDuration + 15000)
         await audio.play()
       } catch (error) {
         console.error('OpenAI speech error:', error)
@@ -550,12 +876,40 @@ function App() {
       }
     }
 
-    if (isMimicSpeech) {
+    const shouldUseBrowserOnly = isMimicSpeech && speechAvatarMode !== 'male'
+
+    if (shouldUseBrowserOnly) {
       playBrowserSpeechFallback()
     } else {
       playOpenAiSpeech()
     }
-  }, [languageMode])
+  }, [avatarMode, cleanupSpeechAnalyser, languageMode])
+
+  const queueGreetingSpeech = useCallback((greetingRequest) => {
+    if (!greetingRequest?.text) return
+
+    clearGreetingSpeakTimer()
+    visemeTimelineRef.current = null
+    visemeCurrentRef.current = SILENCE_VISEME_STATE
+    setAvatarAction('idle')
+
+    const queuedText = greetingRequest.text
+    const queuedLanguageMode = greetingRequest.languageMode
+    const queuedAvatarMode = greetingRequest.avatarMode
+
+    greetingSpeakTimerRef.current = window.setTimeout(() => {
+      greetingSpeakTimerRef.current = null
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (queuedAvatarMode !== avatarMode) return
+          speak(queuedText, false, {
+            language: queuedLanguageMode,
+            avatarMode: queuedAvatarMode,
+          })
+        })
+      })
+    }, 650)
+  }, [avatarMode, clearGreetingSpeakTimer, speak])
 
   // Greeting plays only after user clicks (to unlock audio) and avatar is loaded.
   useEffect(() => {
@@ -565,15 +919,30 @@ function App() {
     const timer = window.setTimeout(() => {
       if (cancelled) return
       hasPlayedGreeting.current = true
-      setMessages([{ text: activeLanguage.greeting, role: 'model' }])
-      speak(activeLanguage.greeting, false)
+      const greetingRequest = {
+        text: activeLanguage.greeting,
+        languageMode,
+        avatarMode,
+      }
+      setMessages([{ text: greetingRequest.text, role: 'model' }])
+      queueGreetingSpeech(greetingRequest)
     }, 300)
 
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [avatarLoaded, userInteracted, speak, activeLanguage.greeting])
+  }, [avatarLoaded, userInteracted, queueGreetingSpeech, activeLanguage.greeting, languageMode, avatarMode])
+
+  useEffect(() => {
+    if (!avatarLoaded || !userInteracted) return
+
+    const pendingGreeting = pendingStarterGreetingRef.current
+    if (!pendingGreeting || pendingGreeting.avatarMode !== avatarMode) return
+
+    pendingStarterGreetingRef.current = null
+    queueGreetingSpeech(pendingGreeting)
+  }, [avatarLoaded, userInteracted, avatarMode, queueGreetingSpeech])
 
   // Process sending a message
   const handleSend = async (text = inputText) => {
@@ -592,12 +961,12 @@ function App() {
     }
 
     // Call the local OpenAI chat endpoint
-    const responseText = await chatWithCompanion(text, messages, languageMode)
+    const responseText = await chatWithCompanion(text, messages, languageMode, avatarMode)
     
     setMessages(prev => [...prev, { text: responseText, role: 'model' }])
     
     // Speak and animate. We pass the isDancing flag to prevent TTS from overwriting the dance!
-    speak(responseText, isDancing)
+    speak(responseText, isDancing, { language: languageMode, avatarMode })
 
     if (isDancing) {
        // Reset back to idle after 8 seconds of dancing
@@ -638,7 +1007,8 @@ function App() {
       style: 'mimic',
       targetDurationMs: options.targetDurationMs,
       mimicRate: options.mimicRate,
-      language: languageMode,
+      language: detectTextLanguage(mimicText, languageMode),
+      avatarMode,
       onComplete: restartAfterSpeech
         ? () => {
             if (mimicAutoRestartRef.current) restartMimicListening(180)
@@ -665,6 +1035,7 @@ function App() {
     speak(readableText, false, {
       style: 'read',
       language: detectedLanguage,
+      avatarMode,
       targetDurationMs,
     })
   }
@@ -681,7 +1052,7 @@ function App() {
   const showVoiceUnavailable = () => {
     const unavailableText = activeLanguage.micUnavailable
     setMessages(prev => [...prev, { text: unavailableText, role: 'model' }])
-    speak(unavailableText, false)
+    speak(unavailableText, false, { language: languageMode, avatarMode })
   }
 
   const handleTranscribedText = async (transcript, options = {}) => {
@@ -689,7 +1060,7 @@ function App() {
     if (!cleanTranscript) {
       const retryText = activeLanguage.micRetry
       setMessages(prev => [...prev, { text: retryText, role: 'model' }])
-      speak(retryText, false)
+      speak(retryText, false, { language: languageMode, avatarMode })
       return
     }
 
@@ -963,7 +1334,7 @@ function App() {
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 
-    if (isMimicMode && startBrowserSpeechRecognition('mimic')) {
+    if ((import.meta.env.PROD || isMimicMode) && startBrowserSpeechRecognition(isMimicMode ? 'mimic' : 'chat')) {
       return
     }
 
@@ -1032,7 +1403,7 @@ function App() {
           console.error('Mic transcription error:', error)
           const errorText = activeLanguage.micError
           setMessages(prev => [...prev, { text: errorText, role: 'model' }])
-          speak(errorText, false)
+          speak(errorText, false, { language: languageMode, avatarMode })
         }
       }
 
@@ -1060,8 +1431,45 @@ function App() {
     setAvatarAction(prev => (prev === 'dance' ? 'idle' : 'dance'))
   }
 
+  const updateStarterGreeting = (nextLanguageMode = languageMode, nextAvatarMode = avatarMode) => {
+    if (!userInteracted) return
+
+    const nextGreeting = getLanguageCopy(nextLanguageMode, nextAvatarMode).greeting
+    const greetingRequest = {
+      text: nextGreeting,
+      languageMode: nextLanguageMode,
+      avatarMode: nextAvatarMode,
+    }
+
+    hasPlayedGreeting.current = true
+    setMessages(prev => (
+      prev.some((message) => message.role === 'user')
+        ? [...prev, { text: nextGreeting, role: 'model' }]
+        : [{ text: nextGreeting, role: 'model' }]
+    ))
+
+    if (!avatarLoaded || nextAvatarMode !== avatarMode) {
+      pendingStarterGreetingRef.current = greetingRequest
+      return
+    }
+
+    pendingStarterGreetingRef.current = null
+    queueGreetingSpeech(greetingRequest)
+  }
+
   const toggleLanguageMode = () => {
-    setLanguageMode(prev => (prev === 'hi' ? 'en' : 'hi'))
+    const nextLanguageMode = languageMode === 'hi' ? 'en' : 'hi'
+    setLanguageMode(nextLanguageMode)
+    updateStarterGreeting(nextLanguageMode, avatarMode)
+  }
+
+  const handleAvatarModeChange = (nextAvatarMode) => {
+    if (nextAvatarMode === avatarMode) return
+    stopActiveSpeech()
+    setAvatarLoaded(false)
+    visemeCurrentRef.current = SILENCE_VISEME_STATE
+    setAvatarMode(nextAvatarMode)
+    updateStarterGreeting(languageMode, nextAvatarMode)
   }
 
   const toggleMimicMode = () => {
@@ -1230,6 +1638,30 @@ function App() {
                 <span>{avatarAction === 'dance' ? 'Dancing' : 'Dance mode'}</span>
               </button>
             </div>
+            <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-800/80 pt-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Character</span>
+              <div className="flex rounded-full bg-slate-800 p-0.5">
+                {[
+                  { id: 'female', label: 'Female', icon: '♀' },
+                  { id: 'male', label: 'Male', icon: '♂' },
+                ].map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => handleAvatarModeChange(mode.id)}
+                    aria-pressed={avatarMode === mode.id}
+                    className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all ${
+                      avatarMode === mode.id
+                        ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <span>{mode.icon}</span>
+                    <span>{mode.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="mb-4 rounded-lg border border-slate-800 bg-slate-900/45 p-2">
@@ -1292,15 +1724,30 @@ function App() {
             <div className="flex gap-1.5">
               <input
                 type="password"
-                placeholder="Paste Gemini API Key here..."
+                placeholder="Paste Gemini or OpenAI API key..."
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 className="flex-1 bg-slate-950/70 border border-slate-800 rounded px-2.5 py-1 text-[11px] text-white focus:outline-none focus:border-purple-500 placeholder-slate-600"
               />
               <button
                 onClick={() => {
-                  localStorage.setItem("VITE_GEMINI_API_KEY", apiKeyInput.trim())
-                  alert("Gemini API Key Saved Successfully! 🚀")
+                  const cleanedKey = apiKeyInput.trim()
+
+                  if (!cleanedKey) {
+                    localStorage.removeItem(API_KEY_STORAGE_KEY)
+                    localStorage.removeItem(LEGACY_GEMINI_KEY_STORAGE_KEY)
+                    alert("API key cleared.")
+                    return
+                  }
+
+                  localStorage.setItem(API_KEY_STORAGE_KEY, cleanedKey)
+                  if (!/^sk-[A-Za-z0-9_-]+/.test(cleanedKey)) {
+                    localStorage.setItem(LEGACY_GEMINI_KEY_STORAGE_KEY, cleanedKey)
+                    alert("Gemini API key saved. Static replies will use Gemini directly.")
+                    return
+                  }
+
+                  alert("OpenAI API key saved. Upload the rebuilt dist with api/chat.php so the domain can use it.")
                 }}
                 className="px-3 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded text-[11px] font-bold text-white transition-all hover:scale-[1.02] active:scale-95 shrink-0"
               >
@@ -1308,7 +1755,7 @@ function App() {
               </button>
             </div>
             <p className="text-[9px] text-slate-500 leading-normal text-left">
-              Stores the key securely in your browser to run the static site. You can also pass it in the link as <code className="text-purple-400 font-mono">?key=YOUR_KEY</code>.
+              Gemini keys run directly in the browser. OpenAI sk- keys use the uploaded <code className="text-purple-400 font-mono">api/chat.php</code> backend. Link keys: <code className="text-purple-400 font-mono">?gemini_key=</code> or <code className="text-purple-400 font-mono">?openai_key=</code>.
             </p>
           </div>
 
@@ -1430,15 +1877,11 @@ function App() {
       <Suspense fallback={<div className="absolute inset-0 z-0 flex items-center justify-center text-purple-400 bg-slate-900">Loading AI Companion...</div>}>
         <AvatarCanvas
           action={avatarAction}
+          avatarMode={avatarMode}
           bgMode={bgMode}
           lightingMode={lightingMode}
           onAvatarLoaded={onAvatarLoaded}
-          wordEventRef={wordEventRef}
           visemeCurrentRef={visemeCurrentRef}
-          onDance={() => {
-            setAvatarAction('dance')
-            setTimeout(() => setAvatarAction('idle'), 8000)
-          }}
         />
       </Suspense>
 

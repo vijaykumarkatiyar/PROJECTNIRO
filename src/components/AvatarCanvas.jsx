@@ -17,6 +17,19 @@ const LERP_SPEED = 2.5 // how fast the camera moves (higher = faster)
 // Left-drag on canvas → rotate avatar around Y (radians per screen pixel)
 const DRAG_YAW_SENSITIVITY = 0.005
 
+const AVATAR_CANVAS_PROFILES = {
+  female: {
+    standingY: 0.35,
+    sittingY: 0.29,
+    sittingDanceY: 0.42,
+  },
+  male: {
+    standingY: 0.35,
+    sittingY: -0.08,
+    sittingDanceY: 0.08,
+  },
+}
+
 const LIGHTING_PRESETS = {
   studio: {
     ambientIntensity: 0.8,
@@ -530,21 +543,26 @@ function SittingRoom3D({ onCollisionChange }) {
   )
 }
 
-export function AvatarCanvas({ action, bgMode = 'default', lightingMode = 'studio', onDance, onAvatarLoaded, wordEventRef, visemeCurrentRef }) {
+export function AvatarCanvas({ action, avatarMode = 'female', bgMode = 'default', lightingMode = 'studio', onAvatarLoaded, visemeCurrentRef }) {
   const controlsRef = useRef()
   const yawRef = useRef(0)
   const headPositionRef = useRef(new THREE.Vector3(0, 0.65, 0))
   const [collisionAlert, setCollisionAlert] = useState([])
   const lighting = LIGHTING_PRESETS[lightingMode] || LIGHTING_PRESETS.studio
+  const avatarProfile = AVATAR_CANVAS_PROFILES[avatarMode] || AVATAR_CANVAS_PROFILES.female
 
   const isSitting = bgMode === 'sitting_room'
   const avatarPos = isSitting
-    ? (action === 'dance' ? [0, 0.42, -0.02] : [0, 0.29, -0.02])
-    : [0, 0.35, 0]
+    ? (action === 'dance' ? [0, avatarProfile.sittingDanceY, -0.02] : [0, avatarProfile.sittingY, -0.02])
+    : [0, avatarProfile.standingY, 0]
 
   useEffect(() => {
     if (!isSitting) setCollisionAlert([])
   }, [isSitting])
+
+  useEffect(() => {
+    yawRef.current = 0
+  }, [avatarMode])
 
   return (
     <div className="absolute inset-0 z-0 cursor-grab active:cursor-grabbing select-none">
@@ -590,13 +608,13 @@ export function AvatarCanvas({ action, bgMode = 'default', lightingMode = 'studi
 
         <React.Suspense fallback={null}>
           <GirlAvatar
+            key={avatarMode}
+            avatarMode={avatarMode}
             position={avatarPos}
             action={action}
             bgMode={bgMode}
-            onDance={onDance}
             yawRef={yawRef}
             onLoaded={onAvatarLoaded}
-            wordEventRef={wordEventRef}
             visemeCurrentRef={visemeCurrentRef}
             headPositionRef={headPositionRef}
           />

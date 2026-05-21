@@ -3,21 +3,200 @@ import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader'
 import * as THREE from 'three'
-import { VISEME_TO_MORPH } from '../services/lipsyncEn'
+import { VISEME_TO_MORPH, SILENCE_VISEME_STATE } from '../services/lipsync'
 
-const MODEL_URL = import.meta.env.BASE_URL + 'andra.glb'
+const AVATAR_MODELS = {
+  female: {
+    url: import.meta.env.BASE_URL + 'andra.glb',
+    targetHeight: 1.55,
+  },
+  male: {
+    url: import.meta.env.BASE_URL + 'ready_player_me_male_avatar.glb',
+    targetHeight: 1.55,
+    idleLookYawScale: 1,
+    idleLookPitchScale: 1,
+  },
+}
 
-export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEventRef, visemeCurrentRef, headPositionRef, bgMode = 'default', ...props }) {
+const RPM_TALK_ANIMATIONS = {
+  female: import.meta.env.BASE_URL + 'animations/rpm_f_talk_001.glb',
+  male: import.meta.env.BASE_URL + 'animations/rpm_m_talk_001.glb',
+}
+
+const RPM_TALK_TRACK_PREFIXES = [
+  'spine',
+  'neck',
+  'head',
+  'leftshoulder',
+  'leftarm',
+  'leftforearm',
+  'lefthand',
+  'rightshoulder',
+  'rightarm',
+  'rightforearm',
+  'righthand',
+]
+
+const normalizeBoneTrackName = (name = '') =>
+  String(name)
+    .toLowerCase()
+    .replace(/^mixamorig[:.]?/i, '')
+    .replace(/[_\-.]\d+$/g, '')
+    .replace(/[^a-z0-9]/g, '')
+
+const isRpmUpperBodyTrack = (sourceName, propertyName) => {
+  if (!sourceName || propertyName.includes('position') || propertyName.includes('scale')) return false
+  const key = normalizeBoneTrackName(sourceName)
+  if (!key || key.includes('eye') || key.includes('toe')) return false
+  return RPM_TALK_TRACK_PREFIXES.some((prefix) => key === prefix || key.startsWith(prefix))
+}
+
+const createRetargetedRpmClip = (clip, scene, name) => {
+  if (!clip || !scene) return null
+
+  const modelBoneNames = []
+  scene.traverse((child) => {
+    if ((child.isBone || child.type === 'Bone') && child.name) modelBoneNames.push(child.name)
+  })
+
+  const exactBoneMap = new Map()
+  for (const boneName of modelBoneNames) {
+    const key = normalizeBoneTrackName(boneName)
+    if (key && !exactBoneMap.has(key)) exactBoneMap.set(key, boneName)
+  }
+
+  const findModelBone = (sourceName) => {
+    const sourceKey = normalizeBoneTrackName(sourceName)
+    if (!sourceKey) return null
+    if (exactBoneMap.has(sourceKey)) return exactBoneMap.get(sourceKey)
+
+    const compatible = modelBoneNames.find((boneName) => {
+      const modelKey = normalizeBoneTrackName(boneName)
+      return modelKey === sourceKey || modelKey.startsWith(sourceKey) || sourceKey.startsWith(modelKey)
+    })
+    return compatible || null
+  }
+
+  const retargetedTracks = []
+  for (const track of clip.tracks) {
+    const dotIndex = track.name.indexOf('.')
+    if (dotIndex === -1) continue
+
+    const sourceName = track.name.substring(0, dotIndex)
+    const propertyName = track.name.substring(dotIndex)
+    if (!isRpmUpperBodyTrack(sourceName, propertyName)) continue
+
+    const targetBone = findModelBone(sourceName)
+    if (!targetBone) continue
+
+    const retargetedTrack = track.clone()
+    retargetedTrack.name = targetBone + propertyName
+    retargetedTracks.push(retargetedTrack)
+  }
+
+  return retargetedTracks.length > 0
+    ? new THREE.AnimationClip(name || `${clip.name}_retargeted`, clip.duration, retargetedTracks)
+    : null
+}
+
+const normalizeMorphName = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+const MOUTH_MORPH_KEYS = [
+  'viseme',
+  'jawopen',
+  'mouthopen',
+  'mouthclose',
+  'mouthfunnel',
+  'mouthpucker',
+  'mouthpress',
+  'mouthstretch',
+  'mouthsmile',
+]
+
+const LIP_SYNC_PROFILES = {
+  female: {
+    primaryViseme: 0.46,
+    fallbackViseme: 0.22,
+    openAmount: 0.31,
+    smoothing: 0.3,
+    maxTarget: 0.46,
+    closeScale: 0.42,
+    stretchScale: 0.5,
+    speechOpenFloor: 0.08,
+  },
+  male: {
+    primaryViseme: 0.62,
+    fallbackViseme: 0.22,
+    openAmount: 0.42,
+    smoothing: 0.42,
+    maxTarget: 0.62,
+    closeScale: 0.5,
+    stretchScale: 0.55,
+    speechOpenFloor: 0.1,
+  },
+}
+
+const VISEME_FALLBACK_MORPHS = {
+  aa: ['mouthOpen', 'jawOpen'],
+  E: ['mouthOpen', 'jawOpen'],
+  I: ['mouthOpen', 'jawOpen'],
+  O: ['mouthFunnel', 'mouthPucker', 'mouthOpen', 'jawOpen'],
+  U: ['mouthPucker', 'mouthFunnel', 'mouthOpen', 'jawOpen'],
+  PP: ['mouthClose', 'mouthPressLeft', 'mouthPressRight'],
+  SS: ['mouthStretchLeft', 'mouthStretchRight'],
+  TH: ['mouthOpen', 'jawOpen'],
+  CH: ['mouthOpen', 'jawOpen'],
+  FF: ['mouthPressLeft', 'mouthPressRight'],
+  kk: ['mouthOpen', 'jawOpen'],
+  nn: ['mouthClose'],
+  RR: ['mouthOpen', 'jawOpen'],
+  DD: ['mouthOpen', 'jawOpen'],
+}
+
+const OPEN_VISEMES = ['aa', 'E', 'I', 'O', 'U']
+const CLOSED_VISEMES = ['PP', 'FF', 'SS', 'nn', 'sil']
+
+const isMouthMorphName = (name) => {
+  const normalized = normalizeMorphName(name)
+  return MOUTH_MORPH_KEYS.some((key) => normalized.includes(key))
+}
+
+const morphMatches = (name, candidates) => {
+  const normalized = normalizeMorphName(name)
+  return candidates.some((candidate) => {
+    const normalizedCandidate = normalizeMorphName(candidate)
+    return normalized === normalizedCandidate || normalized.includes(normalizedCandidate)
+  })
+}
+
+const getMorphInstanceKey = (morph) => `${morph.mesh.uuid}:${morph.index}`
+
+export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onLoaded, visemeCurrentRef, headPositionRef, bgMode = 'default', ...props }) {
   const yawGroupRef = useRef(null)
-  const { scene } = useGLTF(MODEL_URL)
+  const avatarConfig = AVATAR_MODELS[avatarMode] || AVATAR_MODELS.female
+  const { scene } = useGLTF(avatarConfig.url)
+  const femaleTalkAsset = useGLTF(RPM_TALK_ANIMATIONS.female)
+  const maleTalkAsset = useGLTF(RPM_TALK_ANIMATIONS.male)
   const [autoScale, setAutoScale] = useState(0.9)
   const [danceAnim, setDanceAnim] = useState(null)
   const mixer = useMemo(() => new THREE.AnimationMixer(scene), [scene])
+  const talkAnim = useMemo(() => {
+    const animationAsset = avatarMode === 'male' ? maleTalkAsset : femaleTalkAsset
+    const sourceClip = animationAsset?.animations?.[0]
+    return createRetargetedRpmClip(sourceClip, scene, `${avatarMode}_rpm_talk_upper_body`)
+  }, [avatarMode, femaleTalkAsset, maleTalkAsset, scene])
   const prevActionRef = useRef(action)
   const resetBlendRef = useRef(0) // 0 = no reset blending, 1 = fully blending back
   const blinkMorphsRef = useRef(null)
   const blinkStartedAtRef = useRef(-10)
   const nextBlinkAtRef = useRef(1.5 + Math.random() * 2)
+
+  useEffect(() => {
+    blinkMorphsRef.current = null
+    resetBlendRef.current = 1.0
+    prevActionRef.current = 'idle'
+    setDanceAnim(null)
+  }, [scene])
 
   // Load and retarget dance.fbx animation
   useEffect(() => {
@@ -38,7 +217,7 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
         const fbxBoneMap = {}
         fbx.traverse((child) => {
           if (child.isBone || child.type === 'Bone') {
-            const stripped = child.name.replace(/^mixamorig[:\.]?/i, '')
+            const stripped = child.name.replace(/^mixamorig[:.]?/i, '')
             fbxBoneMap[child.name] = stripped
           }
         })
@@ -85,16 +264,16 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       const size = box.getSize(new THREE.Vector3())
       console.log('Model size:', size)
       if (size.y > 0) {
-        const scale = 1.55 / size.y
+        const scale = avatarConfig.targetHeight / size.y
         console.log('Setting autoScale to:', scale)
         setAutoScale(scale)
       }
     }
-  }, [scene])
+  }, [avatarConfig.targetHeight, scene])
 
   useEffect(() => {
-    if (scene) onLoaded?.()
-  }, [scene, onLoaded])
+    if (scene) onLoaded?.(avatarMode)
+  }, [avatarMode, scene, onLoaded])
 
   // Collect every bone (scene graph + skinned mesh skeletons — GLTF often duplicates)
   const bones = useMemo(() => {
@@ -195,11 +374,6 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
   const mouthMorphs = useMemo(() => {
     if (!scene) return null
     const morphs = []
-    const isMouthMorphName = (name) => {
-      const lower = name.toLowerCase().trim()
-      const allowed = ['viseme_aa', 'viseme_e', 'viseme_i', 'viseme_o', 'viseme_u', 'viseme_ch', 'viseme_dd', 'viseme_ff', 'viseme_kk', 'viseme_nn', 'viseme_pp', 'viseme_rr', 'viseme_sil', 'viseme_ss', 'viseme_th', 'jawopen', 'mouthopen']
-      return allowed.includes(lower)
-    }
     scene.traverse((child) => {
       if (child.isSkinnedMesh && child.morphTargetDictionary && child.morphTargetInfluences) {
         const dict = child.morphTargetDictionary
@@ -217,9 +391,7 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
     const getExpressionWeight = (name) => {
       const lower = name.toLowerCase().trim()
       if (
-        lower.includes('viseme') ||
-        lower.includes('jawopen') ||
-        lower.includes('mouthopen') ||
+        isMouthMorphName(name) ||
         lower.includes('blink') ||
         lower.includes('eyeclosed') ||
         lower.includes('eye_close')
@@ -277,6 +449,23 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       }
     }
   }, [action, danceAnim, mixer, bones])
+
+  useEffect(() => {
+    if (action !== 'talk' || bgMode === 'sitting_room' || !talkAnim) return undefined
+
+    const actionClip = mixer.clipAction(talkAnim)
+    actionClip.reset()
+    actionClip.setLoop(THREE.LoopRepeat, Infinity)
+    actionClip.clampWhenFinished = false
+    actionClip.enabled = true
+    actionClip.setEffectiveWeight(0.36)
+    actionClip.fadeIn(0.18).play()
+
+    return () => {
+      actionClip.stop()
+      resetBlendRef.current = Math.max(resetBlendRef.current, 0.65)
+    }
+  }, [action, bgMode, mixer, talkAnim])
 
   // Per-frame animation
   // Touch tracking for mobile gestures
@@ -377,6 +566,14 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
       }
     }
 
+    const resetMouthMorphs = (speed = 0.3) => {
+      if (!mouthMorphs) return
+      for (const morph of mouthMorphs) {
+        const current = morph.mesh.morphTargetInfluences[morph.index] || 0
+        morph.mesh.morphTargetInfluences[morph.index] = current + (0 - current) * speed
+      }
+    }
+
     if (yawGroupRef.current && yawRef && !isNaN(yawRef.current)) {
       if (bgMode === 'sitting_room') {
         yawRef.current = safeLerp(yawRef.current, 0, 0.1)
@@ -444,8 +641,25 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
     const pointerX = touchRef.current.active ? touchRef.current.x : state.pointer.x
     const pointerY = touchRef.current.active ? touchRef.current.y : state.pointer.y
 
-    const targetYaw = isTalking ? 0 : ((pointerX * Math.PI) / 4 || 0)
-    const targetPitch = isTalking ? 0 : (-(pointerY * Math.PI) / 6 || 0)
+    const idleLookYawScale = avatarConfig.idleLookYawScale ?? 1
+    const idleLookPitchScale = avatarConfig.idleLookPitchScale ?? 1
+    const targetYaw = isTalking ? 0 : (((pointerX * Math.PI) / 4 || 0) * idleLookYawScale)
+    const targetPitch = isTalking ? 0 : ((-(pointerY * Math.PI) / 6 || 0) * idleLookPitchScale)
+    const relaxedArmX = avatarConfig.relaxedArmX || 0
+    const relaxedArmZ = avatarConfig.relaxedArmZ || 0
+
+    const applyRelaxedArms = (sway = 0, speed = 0.12) => {
+      if (bLeftArm?.userData.initRot) {
+        bLeftArm.rotation.x = safeLerp(bLeftArm.rotation.x, bLeftArm.userData.initRot.x + relaxedArmX, speed)
+        bLeftArm.rotation.y = safeLerp(bLeftArm.rotation.y, bLeftArm.userData.initRot.y, speed)
+        bLeftArm.rotation.z = safeLerp(bLeftArm.rotation.z, bLeftArm.userData.initRot.z + relaxedArmZ + sway, speed)
+      }
+      if (bRightArm?.userData.initRot) {
+        bRightArm.rotation.x = safeLerp(bRightArm.rotation.x, bRightArm.userData.initRot.x + relaxedArmX, speed)
+        bRightArm.rotation.y = safeLerp(bRightArm.rotation.y, bRightArm.userData.initRot.y, speed)
+        bRightArm.rotation.z = safeLerp(bRightArm.rotation.z, bRightArm.userData.initRot.z - relaxedArmZ - sway, speed)
+      }
+    }
 
     // Decaying touch nod effect (smooth sine nod animation)
     let nodOffset = 0
@@ -478,11 +692,7 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
         eye.rotation.y = safeLerp(eye.rotation.y, eye.userData.initRot.y, 0.22)
         eye.rotation.z = safeLerp(eye.rotation.z, eye.userData.initRot.z, 0.22)
       })
-      if (mouthMorphs) {
-        for (const m of mouthMorphs) {
-          m.mesh.morphTargetInfluences[m.index] *= 0.9
-        }
-      }
+      resetMouthMorphs(0.34)
       applyExpression(0, 0.18)
       return
     }
@@ -539,82 +749,89 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
         bRightEye.rotation.x = safeLerp(bRightEye.rotation.x, (eyeBase?.x || 0) + targetPitch * 0.18, 0.15)
         bRightEye.rotation.z = safeLerp(bRightEye.rotation.z, eyeBase?.z || 0, 0.15)
       }
-      if (bLeftArm) {
-        bLeftArm.rotation.x = bLeftArm.userData.initRot.x
-        bLeftArm.rotation.y = bLeftArm.userData.initRot.y
-        bLeftArm.rotation.z = bLeftArm.userData.initRot.z + Math.sin(t * 1.5) * 0.05
-      }
-      if (bRightArm) {
-        bRightArm.rotation.x = bRightArm.userData.initRot.x
-        bRightArm.rotation.y = bRightArm.userData.initRot.y
-        bRightArm.rotation.z = bRightArm.userData.initRot.z - Math.sin(t * 1.5) * 0.05
-      }
+      applyRelaxedArms(Math.sin(t * 1.5) * 0.05, 0.14)
       if (bJaw) bJaw.rotation.x = safeLerp(bJaw.rotation.x, 0, 0.1)
-      if (mouthMorphs) {
-        for (const m of mouthMorphs) {
-          m.mesh.morphTargetInfluences[m.index] *= 0.9
-        }
-      }
+      resetMouthMorphs(0.32)
       const touchSmile = Math.sin(touchNodRef.current * Math.PI) * 0.55
       applyExpression(touchSmile, 0.08)
 
     } else if (action === 'talk') {
       // ── Precise Text-to-Viseme Lip Sync (TalkingHead Port) ──
-      const visemeState = visemeCurrentRef?.current || { viseme: 'sil', nextViseme: 'sil', phase: 0 }
+      const visemeState = visemeCurrentRef?.current || SILENCE_VISEME_STATE
       
       const isSpeaking = visemeState.viseme !== 'sil' || visemeState.nextViseme !== 'sil'
+      const lipProfile = LIP_SYNC_PROFILES[avatarMode] || LIP_SYNC_PROFILES.female
+      const clampedPhase = Math.max(0, Math.min(1, visemeState.phase || 0))
+      const easedPhase = clampedPhase * clampedPhase * (3 - 2 * clampedPhase)
+      const energyDriven = Number.isFinite(visemeState.energy)
+      const speechEnergy = energyDriven
+        ? Math.max(0, Math.min(1, visemeState.energy))
+        : 1
       
-      // We will map the current viseme to morph targets, interpolating towards the next
-      const targetWeights = {}
+      // Map visemes to every matching head/teeth morph target. RPM exports can
+      // include duplicate targets such as viseme_aa and viseme_aa.001.
+      const targetWeights = new Map()
       
-      // Initialize all morphs to 0
-      if (mouthMorphs) {
+      const addMorphTargets = (candidates, amount) => {
+        if (!mouthMorphs || !candidates.length || amount <= 0) return
         for (const m of mouthMorphs) {
-          targetWeights[m.name] = 0
+          if (!morphMatches(m.name, candidates)) continue
+          const key = getMorphInstanceKey(m)
+          targetWeights.set(key, Math.max(targetWeights.get(key) || 0, amount))
         }
       }
 
-      // Add weight for current viseme (decreasing as phase goes 0 -> 1)
-      const currentMorphName = VISEME_TO_MORPH[visemeState.viseme]
-      if (currentMorphName) {
-        const matchingMorph = mouthMorphs?.find(m => m.name.toLowerCase().includes(currentMorphName))
-        if (matchingMorph) targetWeights[matchingMorph.name] = (1.0 - visemeState.phase) * 0.55
+      const addVisemeTargets = (viseme, blendAmount) => {
+        if (!viseme || viseme === 'sil' || blendAmount <= 0) return
+        const primaryMorph = VISEME_TO_MORPH[viseme]
+        const drivenBlend = blendAmount * speechEnergy
+        if (primaryMorph) addMorphTargets([primaryMorph], drivenBlend * lipProfile.primaryViseme)
+        addMorphTargets(VISEME_FALLBACK_MORPHS[viseme] || [], drivenBlend * lipProfile.fallbackViseme)
       }
 
-      // Add weight for next viseme (increasing as phase goes 0 -> 1)
-      const nextMorphName = VISEME_TO_MORPH[visemeState.nextViseme]
-      if (nextMorphName && visemeState.nextViseme !== visemeState.viseme) {
-        const matchingMorph = mouthMorphs?.find(m => m.name.toLowerCase().includes(nextMorphName))
-        if (matchingMorph) targetWeights[matchingMorph.name] = (visemeState.phase) * 0.55
-      }
+      addVisemeTargets(visemeState.viseme, 1.0 - easedPhase)
+      if (visemeState.nextViseme !== visemeState.viseme) addVisemeTargets(visemeState.nextViseme, easedPhase)
 
       // Special handling for jaw
       let jawTarget = 0
       if (isSpeaking) {
         // Jaw opens for vowels, closes for consonants/silence
-        const openVisemes = ['aa', 'E', 'I', 'O', 'U']
-        const currentIsOpen = openVisemes.includes(visemeState.viseme)
-        const nextIsOpen = openVisemes.includes(visemeState.nextViseme)
+        const currentIsOpen = OPEN_VISEMES.includes(visemeState.viseme)
+        const nextIsOpen = OPEN_VISEMES.includes(visemeState.nextViseme)
+        const currentIsClosed = CLOSED_VISEMES.includes(visemeState.viseme)
+        const nextIsClosed = CLOSED_VISEMES.includes(visemeState.nextViseme)
         
-        const currentOpenWeight = currentIsOpen ? (1.0 - visemeState.phase) : 0
-        const nextOpenWeight = nextIsOpen ? visemeState.phase : 0
+        const currentOpenWeight = currentIsOpen ? (1.0 - easedPhase) : 0
+        const nextOpenWeight = nextIsOpen ? easedPhase : 0
+        const closedWeight =
+          (currentIsClosed ? (1.0 - easedPhase) : 0) +
+          (nextIsClosed ? easedPhase : 0)
+        const speechOpenFloor = lipProfile.speechOpenFloor * speechEnergy * (1 - Math.min(0.75, closedWeight * 0.75))
         
-        jawTarget = (currentOpenWeight + nextOpenWeight) * 0.35
+        jawTarget = Math.max((currentOpenWeight + nextOpenWeight) * lipProfile.openAmount * speechEnergy, speechOpenFloor)
       }
 
       if (mouthMorphs) {
         for (const m of mouthMorphs) {
-          const lower = m.name.toLowerCase()
-          let target = targetWeights[m.name] || 0
+          const lower = normalizeMorphName(m.name)
+          let target = targetWeights.get(getMorphInstanceKey(m)) || 0
           
           if (lower === 'jawopen' || lower === 'mouthopen') {
-             target = jawTarget
+            target = Math.max(target, jawTarget)
+          } else if (lower.includes('mouthclose') || lower.includes('mouthpress')) {
+            target = Math.min(target * lipProfile.closeScale, 0.28)
+          } else if (lower.includes('mouthstretch')) {
+            target = Math.min(target * lipProfile.stretchScale, 0.34)
+          } else {
+            target = Math.min(target, lipProfile.maxTarget)
           }
 
-          // Smooth fast interpolation for precise lip sync
-          const current = m.mesh.morphTargetInfluences[m.index]
-          m.mesh.morphTargetInfluences[m.index] = current + (target - current) * 0.45
+          // Smooth enough for natural lips, still fast enough to stay aligned.
+          const current = m.mesh.morphTargetInfluences[m.index] || 0
+          m.mesh.morphTargetInfluences[m.index] = current + (target - current) * lipProfile.smoothing
         }
+      } else {
+        resetMouthMorphs(0.36)
       }
       applyExpression(isSpeaking ? 0.6 : 0.35, 0.12)
 
@@ -623,22 +840,23 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
         bJaw.rotation.z = safeLerp(bJaw.rotation.z, 0, 0.1)
       }
 
-      const mouthProxy = isSpeaking ? 0.1 : 0
+      const speechMotion = isSpeaking ? 0.1 : 0
+      applyRelaxedArms(Math.sin(t * 1.1) * 0.025, 0.08)
       if (bSpine) {
         bSpine.rotation.z = safeLerp(bSpine.rotation.z, bSpine.userData.initRot.z + Math.sin(t * 0.8) * 0.01, 0.06)
-        bSpine.rotation.x = safeLerp(bSpine.rotation.x, bSpine.userData.initRot.x + Math.sin(t * 0.5) * 0.005 + mouthProxy * 0.25, 0.06)
+        bSpine.rotation.x = safeLerp(bSpine.rotation.x, bSpine.userData.initRot.x + Math.sin(t * 0.5) * 0.005 + speechMotion * 0.25, 0.06)
         bSpine.rotation.y = safeLerp(bSpine.rotation.y, bSpine.userData.initRot.y, 0.06)
       }
 
       if (bNeck) {
-        bNeck.rotation.x = safeLerp(bNeck.rotation.x, bNeck.userData.initRot.x + Math.sin(t * 0.6) * 0.008 + mouthProxy * 0.3, 0.06)
+        bNeck.rotation.x = safeLerp(bNeck.rotation.x, bNeck.userData.initRot.x + Math.sin(t * 0.6) * 0.008 + speechMotion * 0.3, 0.06)
         bNeck.rotation.y = safeLerp(bNeck.rotation.y, bNeck.userData.initRot.y + Math.sin(t * 0.4) * 0.02, 0.06)
         bNeck.rotation.z = safeLerp(bNeck.rotation.z, bNeck.userData.initRot.z, 0.06)
       }
 
       if (bHead) {
         bHead.rotation.y = safeLerp(bHead.rotation.y, bHead.userData.initRot.y + Math.sin(t * 0.5) * 0.03, 0.06)
-        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x + Math.sin(t * 0.7) * 0.015 + mouthProxy * 0.5, 0.06)
+        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x + Math.sin(t * 0.7) * 0.015 + speechMotion * 0.5, 0.06)
         bHead.rotation.z = safeLerp(bHead.rotation.z, bHead.userData.initRot.z + Math.sin(t * 0.3) * 0.01, 0.06)
       }
 
@@ -665,6 +883,10 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
         bRightArm.rotation.x = safeLerp(bRightArm.rotation.x, bRightArm.userData.initRot.x + Math.sin(t * 1.0) * 0.03, 0.05)
         bRightArm.rotation.y = bRightArm.userData.initRot.y
         bRightArm.rotation.z = safeLerp(bRightArm.rotation.z, bRightArm.userData.initRot.z - Math.sin(t * 0.8) * 0.05, 0.05)
+      }
+
+      if (talkAnim && bgMode !== 'sitting_room') {
+        mixer.update(delta)
       }
 
     } else if (action === 'dance') {
@@ -838,4 +1060,5 @@ export function GirlAvatar({ action = 'idle', onDance, yawRef, onLoaded, wordEve
   )
 }
 
-useGLTF.preload(MODEL_URL)
+Object.values(AVATAR_MODELS).forEach((model) => useGLTF.preload(model.url))
+Object.values(RPM_TALK_ANIMATIONS).forEach((url) => useGLTF.preload(url))

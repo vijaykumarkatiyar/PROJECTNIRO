@@ -2,6 +2,8 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const isOpenAiKey = (value = '') => /^sk-[A-Za-z0-9_-]+/.test(String(value).trim())
+
 function openAiChatPlugin() {
   return {
     name: 'local-openai-chat',
@@ -12,6 +14,12 @@ function openAiChatPlugin() {
       const speechModel = env.OPENAI_TTS_MODEL || env.VITE_OPENAI_TTS_MODEL || 'gpt-4o-mini-tts'
       const speechVoice = env.OPENAI_TTS_VOICE || env.VITE_OPENAI_TTS_VOICE || 'coral'
       const mimicSpeechVoice = env.OPENAI_MIMIC_TTS_VOICE || env.VITE_OPENAI_MIMIC_TTS_VOICE || 'shimmer'
+      const femaleSpeechVoice = env.OPENAI_TTS_FEMALE_VOICE || env.VITE_OPENAI_TTS_FEMALE_VOICE || speechVoice
+      const maleSpeechVoice = env.OPENAI_TTS_MALE_VOICE || env.VITE_OPENAI_TTS_MALE_VOICE || 'onyx'
+      const femaleMimicSpeechVoice =
+        env.OPENAI_MIMIC_TTS_FEMALE_VOICE || env.VITE_OPENAI_MIMIC_TTS_FEMALE_VOICE || mimicSpeechVoice
+      const maleMimicSpeechVoice =
+        env.OPENAI_MIMIC_TTS_MALE_VOICE || env.VITE_OPENAI_MIMIC_TTS_MALE_VOICE || maleSpeechVoice
       const transcriptionModel =
         env.OPENAI_TRANSCRIBE_MODEL || env.VITE_OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe'
 
@@ -32,13 +40,6 @@ function openAiChatPlugin() {
           return
         }
 
-        if (!apiKey) {
-          res.statusCode = 500
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: 'OPENAI_API_KEY is missing in .env.local' }))
-          return
-        }
-
         let requestLanguage = 'hi'
 
         try {
@@ -56,6 +57,13 @@ function openAiChatPlugin() {
             })
 
           if (isTranscribeRequest) {
+            if (!apiKey) {
+              res.statusCode = 500
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'OPENAI_API_KEY is missing in .env.local' }))
+              return
+            }
+
             const audioBuffer = await readBody(true)
             if (!audioBuffer.length) {
               res.statusCode = 400
@@ -98,7 +106,17 @@ function openAiChatPlugin() {
           const speechStyle = String(payload.style || 'teacher').trim().toLowerCase()
           const targetDurationMs = Number(payload.targetDurationMs || 0)
           requestLanguage = String(payload.language || 'hi').trim().toLowerCase() === 'en' ? 'en' : 'hi'
+          const requestAvatarMode = String(payload.avatarMode || 'female').trim().toLowerCase() === 'male' ? 'male' : 'female'
           const history = Array.isArray(payload.history) ? payload.history.slice(-12) : []
+          const requestApiKey = String(payload.apiKey || '').trim()
+          const activeApiKey = isOpenAiKey(requestApiKey) ? requestApiKey : apiKey
+
+          if (!activeApiKey) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'OPENAI_API_KEY is missing in .env.local or request payload' }))
+            return
+          }
 
           if (isSpeechRequest) {
             if (!speechText) {
@@ -118,15 +136,20 @@ function openAiChatPlugin() {
               ? Math.max(0.65, Math.min(1.8, estimatedSeconds / targetSeconds))
               : 1.12
             const teacherSpeechInstructions = requestLanguage === 'en'
-              ? 'Speak in clear, natural English with a warm teacher-like tone.'
-              : 'Speak in clear, natural Hindi with a warm teacher-like tone.'
+              ? `Speak in clear, natural English with a warm ${requestAvatarMode} teacher-like voice.`
+              : `Speak in clear, natural Hindi with a warm ${requestAvatarMode} teacher-like voice.`
             const readSpeechInstructions = requestLanguage === 'en'
-              ? 'Read the input text exactly in clear English. Use a warm expressive voice, pause naturally at commas and sentence endings, and keep every word easy to understand.'
-              : 'Read the input text exactly in clear Hindi or Hinglish. Use a warm expressive voice, pause naturally at commas and sentence endings, and keep every word easy to understand.'
+              ? `Read the input text exactly in clear English. Use a warm expressive ${requestAvatarMode} voice, pause naturally at commas and sentence endings, and keep every word easy to understand.`
+              : `Read the input text exactly in clear Hindi or Hinglish. Use a warm expressive ${requestAvatarMode} voice, pause naturally at commas and sentence endings, and keep every word easy to understand.`
+            const selectedSpeechVoice = requestAvatarMode === 'male'
+              ? (isMimicSpeech ? maleMimicSpeechVoice : maleSpeechVoice)
+              : (isMimicSpeech ? femaleMimicSpeechVoice : femaleSpeechVoice)
             const speechInstructions = isMimicSpeech
               ? [
                 'Repeat the input text exactly with no extra words.',
-                'Use a bright, playful, childlike cartoon voice, like a fun talking-toy repeat.',
+                requestAvatarMode === 'male'
+                  ? 'Use a bright, playful boyish cartoon voice, like a fun talking-toy repeat.'
+                  : 'Use a bright, playful childlike cartoon voice, like a fun talking-toy repeat.',
                 'Keep it clear and friendly, not serious or teacher-like.',
                 requestLanguage === 'en' ? 'Use natural English pronunciation.' : 'Use natural Hindi or Hinglish pronunciation when needed.',
                 targetSeconds > 0
@@ -140,12 +163,12 @@ function openAiChatPlugin() {
             const openAiSpeechResponse = await fetch('https://api.openai.com/v1/audio/speech', {
               method: 'POST',
               headers: {
-                Authorization: `Bearer ${apiKey}`,
+                Authorization: `Bearer ${activeApiKey}`,
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
                 model: speechModel,
-                voice: isMimicSpeech ? mimicSpeechVoice : speechVoice,
+                voice: selectedSpeechVoice,
                 input: speechText.slice(0, 4000),
                 instructions: speechInstructions,
                 response_format: 'mp3',
@@ -183,13 +206,13 @@ function openAiChatPlugin() {
           ].join('\n')
 
           const chatInstructions = requestLanguage === 'en'
-            ? 'You are a friendly AI teacher companion. Always respond in natural English. Keep answers warm, educational, and concise in 1-3 sentences unless the user asks for detail.'
-            : 'You are a friendly AI teacher companion. Always respond in natural Hindi, using Devanagari script. Keep answers warm, educational, and concise in 1-3 sentences unless the user asks for detail.'
+            ? `You are a friendly ${requestAvatarMode} AI teacher companion. The selected language mode is English and it always wins over the student's typed language or script. If the student writes in Hindi, Devanagari, Hinglish, or any other language, still answer only in natural English. Keep answers warm, educational, and concise in 1-3 sentences unless the user asks for detail.`
+            : `You are a friendly ${requestAvatarMode} AI teacher companion. The selected language mode is Hindi and it always wins over the student's typed language or script. If the student writes in English, Latin script, Hinglish, or any other language, still answer only in natural Hindi using Devanagari script. Keep answers warm, educational, and concise in 1-3 sentences unless the user asks for detail.`
 
           const openAiResponse = await fetch('https://api.openai.com/v1/responses', {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${apiKey}`,
+              Authorization: `Bearer ${activeApiKey}`,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
