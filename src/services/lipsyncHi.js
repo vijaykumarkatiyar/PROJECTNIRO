@@ -77,7 +77,6 @@ function parseDevanagariWord(word) {
 
   while (i < chars.length) {
     const char = chars[i]
-    const nextChar = chars[i + 1]
 
     // 1. Independent Vowels
     if (independentVowels[char]) {
@@ -270,8 +269,6 @@ function mockEnglishWordVisemes(word) {
   const lower = word.toLowerCase()
   const visemes = []
   const durations = []
-  let time = 0
-
   for (let i = 0; i < lower.length; i++) {
     const char = lower[i]
     let v = 'sil'

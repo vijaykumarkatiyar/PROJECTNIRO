@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'market', 'react-three-fiber', 'three-vrm', 'drei', 'gltfjsx', 'scripts', 'find-girl.js', 'download.cjs', 'download_rpm.cjs', 'doh_download.cjs']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

@@ -133,10 +133,10 @@ function detectTextLanguage(text, fallback = 'hi') {
   return devanagariCount >= Math.max(2, latinCount * 0.35) ? 'hi' : 'en'
 }
 
-function stabilizeVisemeTimeline(timeline, durationMs, avatarMode = 'female') {
+function stabilizeVisemeTimeline(timeline, durationMs) {
   if (!timeline?.visemes?.length) return timeline
 
-  const minDuration = avatarMode === 'male' ? 105 : 90
+  const minDuration = 45
   const segments = timeline.visemes.map((viseme, index) => ({
     viseme,
     duration: Math.max(0, Number(timeline.durations[index]) || 0),
@@ -384,7 +384,7 @@ function App() {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     activeUtteranceRef.current = null
     visemeTimelineRef.current = null
-    visemeCurrentRef.current = SILENCE_VISEME_STATE
+    visemeCurrentRef.current = { ...SILENCE_VISEME_STATE, forceClose: true }
     setAvatarAction('idle')
   }, [cleanupSpeechAnalyser, clearGreetingSpeakTimer])
 
@@ -544,6 +544,7 @@ function App() {
     let speechStartTime = 0
     let hasFinishedSpeech = false
     let activeTimelineDurationMs = 0
+    let pulseStarted = false
 
     const getSafeSpeechDuration = (durationMs) => {
       const duration = Number(durationMs)
@@ -557,7 +558,7 @@ function App() {
       if (!force && Math.abs(safeDuration - activeTimelineDurationMs) < 180) return
       activeTimelineDurationMs = safeDuration
       const rawTimeline = createVisemeTimeline(text, safeDuration, speechLanguage)
-      visemeTimelineRef.current = stabilizeVisemeTimeline(rawTimeline, safeDuration, speechAvatarMode)
+      visemeTimelineRef.current = stabilizeVisemeTimeline(rawTimeline, safeDuration)
     }
 
     const getAudioDurationMs = (audio) =>
@@ -615,6 +616,18 @@ function App() {
       return energy
     }
 
+    const getLipDriveEnergy = (visemeState) => {
+      const hasActiveMouthShape = visemeState.viseme !== 'sil' || visemeState.nextViseme !== 'sil'
+      if (!hasActiveMouthShape) return 0
+
+      const analysedEnergy = getSpeechEnergy()
+      if (analysedEnergy == null) return 1
+
+      // The analyser can lag on the first audible frames. Keep a natural
+      // floor so lips do not wait until after the voice is already heard.
+      return Math.max(0.72, analysedEnergy)
+    }
+
     syncVisemeTimeline(estimatedDuration, true)
     
     const updateVisemeLoop = () => {
@@ -625,32 +638,32 @@ function App() {
 
       if (speechAudioRef.current) {
         const audio = speechAudioRef.current
-        const audioMs = audio.currentTime * 1000
-        
-        // If our high-resolution performance.now() clock drifts by more than
-        // 80ms from the coarse audio.currentTime clock, recalibrate it
-        if (Math.abs(elapsedMs - audioMs) > 80) {
-          speechStartTime = now - audioMs
-          elapsedMs = audioMs
-        }
+        elapsedMs = audio.currentTime * 1000
+        speechStartTime = now - elapsedMs
       }
 
       const visemeState = getVisemeStateAt(visemeTimelineRef.current, elapsedMs)
-      const speechEnergy = getSpeechEnergy()
       visemeCurrentRef.current = {
         ...visemeState,
-        energy: speechEnergy == null ? 1 : speechEnergy,
+        energy: getLipDriveEnergy(visemeState),
       }
 
       visemeRafRef.current = requestAnimationFrame(updateVisemeLoop)
     }
 
-    const startPulse = () => {
+    const startPulse = (startElapsedMs = 0) => {
       if (hasFinishedSpeech || speakGenRef.current !== gen) return
       const audioDurationMs = getAudioDurationMs(speechAudioRef.current)
       if (audioDurationMs > 0) syncVisemeTimeline(audioDurationMs, true)
+      const safeStartElapsed = Math.max(0, Number(startElapsedMs) || 0)
+      const firstState = getVisemeStateAt(visemeTimelineRef.current, safeStartElapsed)
+      visemeCurrentRef.current = {
+        ...firstState,
+        energy: getLipDriveEnergy(firstState),
+      }
       startTalkIfCurrent()
-      speechStartTime = performance.now()
+      speechStartTime = performance.now() - safeStartElapsed
+      pulseStarted = true
       
       if (visemeRafRef.current) cancelAnimationFrame(visemeRafRef.current)
       visemeRafRef.current = requestAnimationFrame(updateVisemeLoop)
@@ -678,7 +691,7 @@ function App() {
       hasFinishedSpeech = true
       stopPulse()
       cleanupSpeechAnalyser()
-      visemeCurrentRef.current = SILENCE_VISEME_STATE
+      visemeCurrentRef.current = { ...SILENCE_VISEME_STATE, forceClose: true }
       endTalkIfCurrent()
       activeUtteranceRef.current = null
       if (speechAudioRef.current) speechAudioRef.current = null
@@ -770,7 +783,7 @@ function App() {
         if (voice) utterance.voice = voice
         try {
           window.speechSynthesis.speak(utterance)
-          const fallbackStartDelay = speechAvatarMode === 'male' ? 180 : 700
+          const fallbackStartDelay = 420
           window.setTimeout(() => {
             if (!browserSpeechStarted && !hasFinishedSpeech && speakGenRef.current === gen) {
               ensureBrowserPulse(900)
@@ -846,13 +859,16 @@ function App() {
           const audioDurationMs = getAudioDurationMs(audio)
           if (audioDurationMs > 0) syncVisemeTimeline(audioDurationMs, true)
         }
+        audio.onplay = () => {
+          startPulse(audio.currentTime * 1000)
+        }
         audio.onplaying = () => {
           const audioDurationMs = getAudioDurationMs(audio)
           if (audioDurationMs > 0) {
             syncVisemeTimeline(audioDurationMs, true)
             armSpeechTimer(audioDurationMs + 2000)
           }
-          startPulse()
+          startPulse(audio.currentTime * 1000)
         }
         audio.onended = finishSpeech
         audio.onerror = () => {
@@ -870,6 +886,9 @@ function App() {
         }
         armSpeechTimer(estimatedDuration + 15000)
         await audio.play()
+        if (!pulseStarted && !hasFinishedSpeech && speakGenRef.current === gen) {
+          startPulse(audio.currentTime * 1000)
+        }
       } catch (error) {
         console.error('OpenAI speech error:', error)
         playBrowserSpeechFallback()

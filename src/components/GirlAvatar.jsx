@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/immutability */
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
@@ -111,28 +112,34 @@ const MOUTH_MORPH_KEYS = [
   'mouthpress',
   'mouthstretch',
   'mouthsmile',
+  'mouthlowerdown',
+  'mouthupperup',
+  'mouthroll',
+  'mouthshrug',
 ]
 
 const LIP_SYNC_PROFILES = {
   female: {
-    primaryViseme: 0.46,
-    fallbackViseme: 0.22,
-    openAmount: 0.31,
-    smoothing: 0.3,
-    maxTarget: 0.46,
-    closeScale: 0.42,
-    stretchScale: 0.5,
-    speechOpenFloor: 0.08,
+    primaryViseme: 0.58,
+    fallbackViseme: 0.08,
+    openAmount: 0.50,
+    smoothing: 0.45,
+    maxTarget: 0.72,
+    closeScale: 0.50,
+    stretchScale: 0.75,
+    speechOpenFloor: 0.06,
+    secondaryMotion: 0.10,
   },
   male: {
-    primaryViseme: 0.62,
-    fallbackViseme: 0.22,
-    openAmount: 0.42,
+    primaryViseme: 0.75,
+    fallbackViseme: 0.1,
+    openAmount: 0.70,
     smoothing: 0.42,
-    maxTarget: 0.62,
-    closeScale: 0.5,
-    stretchScale: 0.55,
-    speechOpenFloor: 0.1,
+    maxTarget: 0.85,
+    closeScale: 0.50,
+    stretchScale: 0.80,
+    speechOpenFloor: 0.12,
+    secondaryMotion: 0.15,
   },
 }
 
@@ -189,13 +196,14 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
   const resetBlendRef = useRef(0) // 0 = no reset blending, 1 = fully blending back
   const blinkMorphsRef = useRef(null)
   const blinkStartedAtRef = useRef(-10)
-  const nextBlinkAtRef = useRef(1.5 + Math.random() * 2)
+  const nextBlinkAtRef = useRef(1.5)
 
   useEffect(() => {
     blinkMorphsRef.current = null
     resetBlendRef.current = 1.0
     prevActionRef.current = 'idle'
     setDanceAnim(null)
+    nextBlinkAtRef.current = 1.5 + Math.random() * 2
   }, [scene])
 
   // Load and retarget dance.fbx animation
@@ -643,8 +651,10 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
 
     const idleLookYawScale = avatarConfig.idleLookYawScale ?? 1
     const idleLookPitchScale = avatarConfig.idleLookPitchScale ?? 1
-    const targetYaw = isTalking ? 0 : (((pointerX * Math.PI) / 4 || 0) * idleLookYawScale)
-    const targetPitch = isTalking ? 0 : ((-(pointerY * Math.PI) / 6 || 0) * idleLookPitchScale)
+    const userLookYaw = (((pointerX * Math.PI) / 4 || 0) * idleLookYawScale)
+    const userLookPitch = ((-(pointerY * Math.PI) / 6 || 0) * idleLookPitchScale)
+    const targetYaw = isTalking ? 0 : userLookYaw
+    const targetPitch = isTalking ? 0 : userLookPitch
     const relaxedArmX = avatarConfig.relaxedArmX || 0
     const relaxedArmZ = avatarConfig.relaxedArmZ || 0
 
@@ -751,7 +761,7 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
       }
       applyRelaxedArms(Math.sin(t * 1.5) * 0.05, 0.14)
       if (bJaw) bJaw.rotation.x = safeLerp(bJaw.rotation.x, 0, 0.1)
-      resetMouthMorphs(0.32)
+      resetMouthMorphs(visemeCurrentRef?.current?.forceClose ? 0.82 : 0.32)
       const touchSmile = Math.sin(touchNodRef.current * Math.PI) * 0.55
       applyExpression(touchSmile, 0.08)
 
@@ -781,12 +791,22 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
         }
       }
 
+      const hasPrimaryViseme = (viseme) => {
+        if (!mouthMorphs || !viseme) return false
+        const primaryMorph = VISEME_TO_MORPH[viseme]
+        if (!primaryMorph) return false
+        return mouthMorphs.some(m => normalizeMorphName(m.name) === normalizeMorphName(primaryMorph))
+      }
+
       const addVisemeTargets = (viseme, blendAmount) => {
         if (!viseme || viseme === 'sil' || blendAmount <= 0) return
         const primaryMorph = VISEME_TO_MORPH[viseme]
         const drivenBlend = blendAmount * speechEnergy
-        if (primaryMorph) addMorphTargets([primaryMorph], drivenBlend * lipProfile.primaryViseme)
-        addMorphTargets(VISEME_FALLBACK_MORPHS[viseme] || [], drivenBlend * lipProfile.fallbackViseme)
+        if (primaryMorph && hasPrimaryViseme(viseme)) {
+          addMorphTargets([primaryMorph], drivenBlend * lipProfile.primaryViseme)
+        } else {
+          addMorphTargets(VISEME_FALLBACK_MORPHS[viseme] || [], drivenBlend * lipProfile.fallbackViseme)
+        }
       }
 
       addVisemeTargets(visemeState.viseme, 1.0 - easedPhase)
@@ -809,6 +829,33 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
         const speechOpenFloor = lipProfile.speechOpenFloor * speechEnergy * (1 - Math.min(0.75, closedWeight * 0.75))
         
         jawTarget = Math.max((currentOpenWeight + nextOpenWeight) * lipProfile.openAmount * speechEnergy, speechOpenFloor)
+
+        const secondaryMotion = (lipProfile.secondaryMotion || 0) * speechEnergy
+        if (secondaryMotion > 0) {
+          const isRounded = ['O', 'U'].includes(visemeState.viseme) || ['O', 'U'].includes(visemeState.nextViseme)
+          const isClosed = currentIsClosed || nextIsClosed
+          const lipPulse = Math.sin(clampedPhase * Math.PI)
+          const lipAsymmetry = Math.sin(t * 3.2 + easedPhase * Math.PI) * 0.5 + 0.5
+          const openBias = currentIsOpen || nextIsOpen ? 1 : 0.45
+          const looseScale = isClosed ? 0.35 : 1
+
+          addMorphTargets(['mouthSmileLeft'], secondaryMotion * (0.35 + lipAsymmetry * 0.35) * looseScale)
+          addMorphTargets(['mouthSmileRight'], secondaryMotion * (0.62 - lipAsymmetry * 0.28) * looseScale)
+          addMorphTargets(['mouthSmile'], secondaryMotion * 0.28 * looseScale)
+          addMorphTargets(['mouthStretchLeft', 'mouthStretchRight', 'mouthStretch'], secondaryMotion * (0.45 + lipPulse * 0.35) * looseScale)
+          addMorphTargets(['mouthLowerDownLeft', 'mouthLowerDownRight', 'mouthLowerDown'], secondaryMotion * (0.55 + lipPulse * 0.65) * openBias * looseScale)
+          addMorphTargets(['mouthUpperUpLeft', 'mouthUpperUpRight', 'mouthUpperUp'], secondaryMotion * (0.22 + lipPulse * 0.42) * openBias * looseScale)
+
+          if (isRounded) {
+            addMorphTargets(['mouthFunnel', 'mouthPucker'], secondaryMotion * (0.95 + lipPulse * 0.55))
+          } else if (!isClosed) {
+            jawTarget += secondaryMotion * 0.18 * lipPulse * openBias
+          }
+
+          if (isClosed) {
+            addMorphTargets(['mouthPressLeft', 'mouthPressRight'], secondaryMotion * 0.22)
+          }
+        }
       }
 
       if (mouthMorphs) {
@@ -836,41 +883,45 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
       applyExpression(isSpeaking ? 0.6 : 0.35, 0.12)
 
       if (bJaw) {
-        bJaw.rotation.x = safeLerp(bJaw.rotation.x, Math.max(0, jawTarget * 0.1), 0.35)
+        const hasVisemeSupport = mouthMorphs && mouthMorphs.some(m => normalizeMorphName(m.name).startsWith('viseme'))
+        const jawBoneScale = hasVisemeSupport ? 0.015 : 0.1
+        bJaw.rotation.x = safeLerp(bJaw.rotation.x, Math.max(0, jawTarget * jawBoneScale), 0.35)
         bJaw.rotation.z = safeLerp(bJaw.rotation.z, 0, 0.1)
       }
 
       const speechMotion = isSpeaking ? 0.1 : 0
+      const talkLookYaw = userLookYaw * 0.46
+      const talkLookPitch = userLookPitch * 0.38
       applyRelaxedArms(Math.sin(t * 1.1) * 0.025, 0.08)
       if (bSpine) {
         bSpine.rotation.z = safeLerp(bSpine.rotation.z, bSpine.userData.initRot.z + Math.sin(t * 0.8) * 0.01, 0.06)
         bSpine.rotation.x = safeLerp(bSpine.rotation.x, bSpine.userData.initRot.x + Math.sin(t * 0.5) * 0.005 + speechMotion * 0.25, 0.06)
-        bSpine.rotation.y = safeLerp(bSpine.rotation.y, bSpine.userData.initRot.y, 0.06)
+        bSpine.rotation.y = safeLerp(bSpine.rotation.y, bSpine.userData.initRot.y + talkLookYaw * 0.12, 0.06)
       }
 
       if (bNeck) {
-        bNeck.rotation.x = safeLerp(bNeck.rotation.x, bNeck.userData.initRot.x + Math.sin(t * 0.6) * 0.008 + speechMotion * 0.3, 0.06)
-        bNeck.rotation.y = safeLerp(bNeck.rotation.y, bNeck.userData.initRot.y + Math.sin(t * 0.4) * 0.02, 0.06)
+        bNeck.rotation.x = safeLerp(bNeck.rotation.x, bNeck.userData.initRot.x + talkLookPitch * 0.34 + Math.sin(t * 0.6) * 0.008 + speechMotion * 0.3, 0.06)
+        bNeck.rotation.y = safeLerp(bNeck.rotation.y, bNeck.userData.initRot.y + talkLookYaw * 0.32 + Math.sin(t * 0.4) * 0.02, 0.06)
         bNeck.rotation.z = safeLerp(bNeck.rotation.z, bNeck.userData.initRot.z, 0.06)
       }
 
       if (bHead) {
-        bHead.rotation.y = safeLerp(bHead.rotation.y, bHead.userData.initRot.y + Math.sin(t * 0.5) * 0.03, 0.06)
-        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x + Math.sin(t * 0.7) * 0.015 + speechMotion * 0.5, 0.06)
+        bHead.rotation.y = safeLerp(bHead.rotation.y, bHead.userData.initRot.y + talkLookYaw * 0.42 + Math.sin(t * 0.5) * 0.03, 0.06)
+        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x + talkLookPitch * 0.42 + Math.sin(t * 0.7) * 0.015 + speechMotion * 0.5, 0.06)
         bHead.rotation.z = safeLerp(bHead.rotation.z, bHead.userData.initRot.z + Math.sin(t * 0.3) * 0.01, 0.06)
       }
 
-      // Eyes look forward while talking (no cursor tracking)
+      // Keep soft eye contact with the user/cursor while talking.
       if (bLeftEye) {
         const eyeBase = bLeftEye.userData.initRot
-        bLeftEye.rotation.y = safeLerp(bLeftEye.rotation.y, eyeBase?.y || 0, 0.1)
-        bLeftEye.rotation.x = safeLerp(bLeftEye.rotation.x, eyeBase?.x || 0, 0.1)
+        bLeftEye.rotation.y = safeLerp(bLeftEye.rotation.y, (eyeBase?.y || 0) + talkLookYaw * 0.2, 0.12)
+        bLeftEye.rotation.x = safeLerp(bLeftEye.rotation.x, (eyeBase?.x || 0) + talkLookPitch * 0.18, 0.12)
         bLeftEye.rotation.z = safeLerp(bLeftEye.rotation.z, eyeBase?.z || 0, 0.1)
       }
       if (bRightEye) {
         const eyeBase = bRightEye.userData.initRot
-        bRightEye.rotation.y = safeLerp(bRightEye.rotation.y, eyeBase?.y || 0, 0.1)
-        bRightEye.rotation.x = safeLerp(bRightEye.rotation.x, eyeBase?.x || 0, 0.1)
+        bRightEye.rotation.y = safeLerp(bRightEye.rotation.y, (eyeBase?.y || 0) + talkLookYaw * 0.2, 0.12)
+        bRightEye.rotation.x = safeLerp(bRightEye.rotation.x, (eyeBase?.x || 0) + talkLookPitch * 0.18, 0.12)
         bRightEye.rotation.z = safeLerp(bRightEye.rotation.z, eyeBase?.z || 0, 0.1)
       }
 
@@ -906,6 +957,9 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
     const shouldSit = bgMode === 'sitting_room' && action !== 'dance'
 
     if (shouldSit) {
+      const sitTalkLookYaw = isTalking ? userLookYaw * 0.34 : 0
+      const sitTalkLookPitch = isTalking ? userLookPitch * 0.3 : 0
+
       // 1. Position hips sitting down and slightly back relative to cached initPos
       if (bHips && bHips.userData.initPos) {
         bHips.position.y = bHips.userData.initPos.y - 0.4
@@ -913,24 +967,24 @@ export function GirlAvatar({ action = 'idle', avatarMode = 'female', yawRef, onL
       }
 
       if (bSpine?.userData.initRot) {
-        bSpine.rotation.x = safeLerp(bSpine.rotation.x, bSpine.userData.initRot.x + 0.04, 0.1)
-        bSpine.rotation.y = safeLerp(bSpine.rotation.y, bSpine.userData.initRot.y, 0.1)
+        bSpine.rotation.x = safeLerp(bSpine.rotation.x, bSpine.userData.initRot.x + 0.04 + sitTalkLookPitch * 0.08, 0.1)
+        bSpine.rotation.y = safeLerp(bSpine.rotation.y, bSpine.userData.initRot.y + sitTalkLookYaw * 0.08, 0.1)
         bSpine.rotation.z = safeLerp(bSpine.rotation.z, bSpine.userData.initRot.z, 0.1)
       }
       if (bNeck?.userData.initRot) {
-        bNeck.rotation.x = safeLerp(bNeck.rotation.x, bNeck.userData.initRot.x - 0.07, 0.1)
-        bNeck.rotation.y = safeLerp(bNeck.rotation.y, bNeck.userData.initRot.y, 0.1)
+        bNeck.rotation.x = safeLerp(bNeck.rotation.x, bNeck.userData.initRot.x - 0.07 + sitTalkLookPitch * 0.26, 0.1)
+        bNeck.rotation.y = safeLerp(bNeck.rotation.y, bNeck.userData.initRot.y + sitTalkLookYaw * 0.3, 0.1)
         bNeck.rotation.z = safeLerp(bNeck.rotation.z, bNeck.userData.initRot.z, 0.1)
       }
       if (bHead?.userData.initRot) {
-        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x - 0.12 + Math.sin(t * 0.7) * 0.01, 0.1)
-        bHead.rotation.y = safeLerp(bHead.rotation.y, bHead.userData.initRot.y, 0.1)
+        bHead.rotation.x = safeLerp(bHead.rotation.x, bHead.userData.initRot.x - 0.12 + sitTalkLookPitch * 0.42 + Math.sin(t * 0.7) * 0.01, 0.1)
+        bHead.rotation.y = safeLerp(bHead.rotation.y, bHead.userData.initRot.y + sitTalkLookYaw * 0.42, 0.1)
         bHead.rotation.z = safeLerp(bHead.rotation.z, bHead.userData.initRot.z, 0.1)
       }
       ;[bLeftEye, bRightEye].forEach((eye) => {
         if (!eye?.userData.initRot) return
-        eye.rotation.x = safeLerp(eye.rotation.x, eye.userData.initRot.x - 0.04, 0.16)
-        eye.rotation.y = safeLerp(eye.rotation.y, eye.userData.initRot.y, 0.16)
+        eye.rotation.x = safeLerp(eye.rotation.x, eye.userData.initRot.x - 0.04 + sitTalkLookPitch * 0.18, 0.16)
+        eye.rotation.y = safeLerp(eye.rotation.y, eye.userData.initRot.y + sitTalkLookYaw * 0.2, 0.16)
         eye.rotation.z = safeLerp(eye.rotation.z, eye.userData.initRot.z, 0.16)
       })
 

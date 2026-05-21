@@ -1,3 +1,4 @@
+/* global process, Buffer */
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -135,30 +136,10 @@ function openAiChatPlugin() {
             const mimicSpeed = targetSeconds > 0
               ? Math.max(0.65, Math.min(1.8, estimatedSeconds / targetSeconds))
               : 1.12
-            const teacherSpeechInstructions = requestLanguage === 'en'
-              ? `Speak in clear, natural English with a warm ${requestAvatarMode} teacher-like voice.`
-              : `Speak in clear, natural Hindi with a warm ${requestAvatarMode} teacher-like voice.`
-            const readSpeechInstructions = requestLanguage === 'en'
-              ? `Read the input text exactly in clear English. Use a warm expressive ${requestAvatarMode} voice, pause naturally at commas and sentence endings, and keep every word easy to understand.`
-              : `Read the input text exactly in clear Hindi or Hinglish. Use a warm expressive ${requestAvatarMode} voice, pause naturally at commas and sentence endings, and keep every word easy to understand.`
             const selectedSpeechVoice = requestAvatarMode === 'male'
               ? (isMimicSpeech ? maleMimicSpeechVoice : maleSpeechVoice)
               : (isMimicSpeech ? femaleMimicSpeechVoice : femaleSpeechVoice)
-            const speechInstructions = isMimicSpeech
-              ? [
-                'Repeat the input text exactly with no extra words.',
-                requestAvatarMode === 'male'
-                  ? 'Use a bright, playful boyish cartoon voice, like a fun talking-toy repeat.'
-                  : 'Use a bright, playful childlike cartoon voice, like a fun talking-toy repeat.',
-                'Keep it clear and friendly, not serious or teacher-like.',
-                requestLanguage === 'en' ? 'Use natural English pronunciation.' : 'Use natural Hindi or Hinglish pronunciation when needed.',
-                targetSeconds > 0
-                  ? `Match the user's speaking pace; aim for about ${targetSeconds.toFixed(1)} seconds total.`
-                  : 'Use a quick playful pace.',
-              ].join(' ')
-              : isReadSpeech
-                ? readSpeechInstructions
-                : teacherSpeechInstructions
+
 
             const openAiSpeechResponse = await fetch('https://api.openai.com/v1/audio/speech', {
               method: 'POST',
@@ -170,7 +151,6 @@ function openAiChatPlugin() {
                 model: speechModel,
                 voice: selectedSpeechVoice,
                 input: speechText.slice(0, 4000),
-                instructions: speechInstructions,
                 response_format: 'mp3',
                 speed: isMimicSpeech ? mimicSpeed : isReadSpeech ? 0.94 : 1,
               }),
